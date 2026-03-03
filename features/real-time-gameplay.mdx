@@ -1,0 +1,187 @@
+---
+title: 'Real-time Multiplayer Gameplay'
+description: 'WebSocket-powered real-time trivia gameplay with live question delivery and instant answer submission'
+icon: 'bolt'
+---
+
+## Overview
+
+Showdown Trivia uses WebSocket connections to deliver a fully real-time multiplayer trivia experience. Players receive questions simultaneously, submit answers in real-time, and see live score updates throughout the game.
+
+## How It Works
+
+### WebSocket Connection
+
+The game establishes persistent WebSocket connections between clients and the server using the Gorilla WebSocket library. Each player maintains an active connection throughout the game session.
+
+<Info>
+**Connection Settings**
+- Read Buffer: 1024 bytes
+- Write Buffer: 1024 bytes  
+- Read Limit: 512 bytes per message
+- Ping Interval: 9 seconds
+- Pong Wait: 10 seconds
+</Info>
+
+Relevant code: `internal/web/ws/hub.go:17-21`, `internal/web/ws/client.go:14-16`
+
+### Game Flow
+
+When a player creates or joins a game room:
+
+1. **Connection Established** - WebSocket connection upgraded from HTTP at `/wscreate` or `/wsjoin/{id}`
+2. **Client Registration** - Player added to room's client list with username
+3. **Game Start** - Room owner triggers game start with `start_game` event
+4. **Question Delivery** - Questions sent sequentially to all connected players
+5. **Answer Collection** - Players submit answers via `send_answer` event
+6. **Score Calculation** - Correct answers scored when timer expires
+7. **Winner Announcement** - Final scores displayed when all questions completed
+
+<Steps>
+  <Step title="Player joins room">
+    Client establishes WebSocket connection to `/wsjoin/{room-id}`
+  </Step>
+  <Step title="Room owner starts game">
+    Sends event: `{"type": "start_game"}`
+  </Step>
+  <Step title="Question broadcast">
+    Server sends question to all players with timer countdown
+  </Step>
+  <Step title="Answer submission">
+    Players send: `{"type": "send_answer", "payload": "answer_text"}`
+  </Step>
+  <Step title="Next question or end">
+    Process repeats until all questions answered
+  </Step>
+</Steps>
+
+## Message Types
+
+The WebSocket implementation supports several event types for game interaction:
+
+### Client → Server Events
+
+<AccordionGroup>
+  <Accordion title="start_game">
+    Initiates the game session. Only available to the room owner.
+    
+    ```json
+    {
+      "type": "start_game"
+    }
+    ```
+    
+    **Handler**: `internal/web/ws/client.go:78-84`
+  </Accordion>
+  
+  <Accordion title="send_answer">
+    Submits a player's answer to the current question.
+    
+    ```json
+    {
+      "type": "send_answer",
+      "payload": "The player's answer"
+    }
+    ```
+    
+    **Handler**: `internal/web/ws/client.go:85-93`
+  </Accordion>
+</AccordionGroup>
+
+### Server → Client Messages
+
+<AccordionGroup>
+  <Accordion title="question">
+    Broadcasts a new trivia question to all players in the room.
+    
+    **Payload**: Question object with text, options, current question number, total questions, and timer
+    
+    **Handler**: `internal/web/ws/rooms.go:44-53`
+  </Accordion>
+  
+  <Accordion title="info">
+    Sends informational messages during gameplay.
+    
+    **Handler**: `internal/web/ws/rooms.go:54-63`
+  </Accordion>
+  
+  <Accordion title="game_end">
+    Announces game completion with final scores for all players.
+    
+    **Payload**: Map of usernames to scores
+    
+    **Handler**: `internal/web/ws/rooms.go:64-74`
+  </Accordion>
+</AccordionGroup>
+
+## Connection Management
+
+### Keep-Alive Mechanism
+
+The WebSocket connection uses ping/pong frames to detect disconnected clients:
+
+- Server sends **ping** every 9 seconds
+- Client must respond with **pong** within 10 seconds
+- Connection closed if pong not received in time
+
+<Warning>
+If a client doesn't respond to ping within 10 seconds, the connection is terminated and the player is removed from the room.
+</Warning>
+
+**Implementation**: `internal/web/ws/client.go:107-128`
+
+### Concurrent Read/Write
+
+Each client runs two goroutines:
+
+1. **Read goroutine** - Listens for incoming messages from client
+2. **Write goroutine** - Sends messages to client from egress channel
+
+This design prevents blocking and allows full-duplex communication.
+
+**Code reference**: `internal/web/ws/client.go:46-98`, `internal/web/ws/client.go:100-131`
+
+## Game Timing
+
+Each question has a configurable timer set by the room creator:
+
+- **Minimum timer**: 2 seconds
+- **Maximum timer**: 20 seconds
+- **Default**: Configurable per game
+
+When the timer expires:
+1. Answer submission closes for that question
+2. Correct answers are scored
+3. Next question begins (or game ends)
+
+**Timer logic**: `internal/web/ws/rooms.go:31-32`, `internal/core/game/game.go:57-83`
+
+## Broadcasting
+
+Messages are broadcast to all players in a room simultaneously:
+
+```go
+// Simplified broadcast logic
+for client := range room.clients {
+    client.egress <- message
+}
+```
+
+This ensures all players see questions and updates at the same time, creating a fair competitive environment.
+
+**Implementation**: `internal/web/ws/rooms.go:22-29`
+
+<Note>
+The real-time gameplay system is designed to handle multiple concurrent games, each in isolated rooms with independent WebSocket connections.
+</Note>
+
+## Error Handling
+
+The system gracefully handles various error conditions:
+
+- **Unexpected close errors** - Client removed from room, connection cleaned up
+- **Invalid JSON** - Error message sent to client
+- **Read/Write failures** - Client disconnected automatically
+- **Room not found** - Connection rejected before upgrade
+
+**Error handling**: `internal/web/ws/client.go:36-45`, `internal/web/ws/client.go:61-68`

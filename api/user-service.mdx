@@ -1,0 +1,422 @@
+---
+title: 'User Service'
+description: 'User service implementation for managing user accounts and authentication'
+---
+
+## Overview
+
+The User Service provides user account management functionality, including user creation, retrieval, and deletion. It implements a repository pattern to abstract database operations.
+
+**Package**: `internal/core/user/service.go`
+
+## UserServiceApi Interface
+
+Defines the public contract for user service implementations.
+
+**Source**: `internal/core/user/interfaces.go`
+
+```go
+type UserServiceApi interface {
+    GetUser(string) (*User, error)
+    AddUser(*User) (*User, error)
+    //DeleteUser(uuid.UUID) error
+}
+```
+
+### Interface Methods
+
+<ParamField path="GetUser" type="method">
+  Retrieves a user by username
+</ParamField>
+
+<ParamField path="AddUser" type="method">
+  Creates a new user account
+</ParamField>
+
+<Note>
+The DeleteUser method is currently commented out in the public interface but is available in the service implementation.
+</Note>
+
+## UserService Implementation
+
+### Structure
+
+```go
+type UserService struct {
+    repo repository
+}
+```
+
+The service wraps a repository implementation that handles data persistence.
+
+### Constructor
+
+```go
+func NewUserService(repo repository) *UserService
+```
+
+<ParamField path="repo" type="repository" required>
+  A repository implementing the repository interface for user data persistence
+</ParamField>
+
+**Returns**: Initialized UserService instance
+
+**Example**:
+```go
+import "github.com/Lafetz/showdown-trivia-game/internal/core/user"
+
+// Assuming you have a repository implementation
+userRepo := NewUserRepository(db)
+userService := user.NewUserService(userRepo)
+```
+
+**Source**: `internal/core/user/service.go:20`
+
+## Methods
+
+### GetUser
+
+Retrieves a user by their username.
+
+```go
+func (srv *UserService) GetUser(username string) (*User, error)
+```
+
+<ParamField path="username" type="string" required>
+  The username to search for
+</ParamField>
+
+**Returns**:
+- `*User`: Pointer to the User object if found
+- `error`: Returns `ErrUserNotFound` if user doesn't exist, or other repository errors
+
+**Example**:
+```go
+user, err := userService.GetUser("john_doe")
+if err != nil {
+    if errors.Is(err, user.ErrUserNotFound) {
+        fmt.Println("User not found")
+        return
+    }
+    return err
+}
+
+fmt.Printf("Found user: %s (ID: %s)\n", user.Username, user.Id)
+```
+
+**Source**: `internal/core/user/service.go:26`
+
+### AddUser
+
+Creates a new user account.
+
+```go
+func (srv *UserService) AddUser(user *User) (*User, error)
+```
+
+<ParamField path="user" type="*User" required>
+  Pointer to a User object with username, email, and hashed password
+</ParamField>
+
+**Returns**:
+- `*User`: The created user with generated ID and timestamp
+- `error`: Returns `ErrUsernameUnique` or `ErrEmailUnique` if username/email already exists
+
+**Example**:
+```go
+import (
+    "golang.org/x/crypto/bcrypt"
+    "github.com/Lafetz/showdown-trivia-game/internal/core/user"
+)
+
+// Hash the password
+hashedPassword, err := bcrypt.GenerateFromPassword([]byte("password123"), bcrypt.DefaultCost)
+if err != nil {
+    return err
+}
+
+// Create new user
+newUser := user.NewUser("john_doe", "john@example.com", hashedPassword)
+
+// Add to database
+createdUser, err := userService.AddUser(newUser)
+if err != nil {
+    if errors.Is(err, user.ErrUsernameUnique) {
+        fmt.Println("Username already taken")
+        return
+    }
+    if errors.Is(err, user.ErrEmailUnique) {
+        fmt.Println("Email already registered")
+        return
+    }
+    return err
+}
+
+fmt.Printf("User created with ID: %s\n", createdUser.Id)
+```
+
+**Source**: `internal/core/user/service.go:29`
+
+### DeleteUser
+
+Deletes a user by their unique ID.
+
+```go
+func (srv *UserService) DeleteUser(id uuid.UUID) error
+```
+
+<ParamField path="id" type="uuid.UUID" required>
+  The unique identifier of the user to delete
+</ParamField>
+
+**Returns**:
+- `error`: Returns `ErrDelete` if deletion fails, or repository-specific errors
+
+**Example**:
+```go
+import "github.com/google/uuid"
+
+userID := uuid.MustParse("550e8400-e29b-41d4-a716-446655440000")
+err := userService.DeleteUser(userID)
+if err != nil {
+    if errors.Is(err, user.ErrDelete) {
+        fmt.Println("Failed to delete user")
+        return
+    }
+    return err
+}
+
+fmt.Println("User deleted successfully")
+```
+
+**Source**: `internal/core/user/service.go:33`
+
+<Warning>
+This method is not exposed in the UserServiceApi interface. It's available in the concrete implementation but not part of the public API contract.
+</Warning>
+
+## Data Structures
+
+### User Entity
+
+Represents a user account.
+
+**Source**: `internal/core/user/domain.go`
+
+```go
+type User struct {
+    Id        uuid.UUID
+    Username  string
+    Email     string
+    Password  []byte
+    CreatedAt time.Time
+}
+```
+
+<ResponseField name="Id" type="uuid.UUID">
+  Unique identifier for the user (auto-generated)
+</ResponseField>
+
+<ResponseField name="Username" type="string">
+  Unique username for authentication
+</ResponseField>
+
+<ResponseField name="Email" type="string">
+  User's email address (must be unique)
+</ResponseField>
+
+<ResponseField name="Password" type="[]byte">
+  Hashed password (should never store plain text passwords)
+</ResponseField>
+
+<ResponseField name="CreatedAt" type="time.Time">
+  Timestamp of account creation
+</ResponseField>
+
+### User Constructor
+
+```go
+func NewUser(username string, email string, password []byte) *User
+```
+
+<ParamField path="username" type="string" required>
+  Desired username
+</ParamField>
+
+<ParamField path="email" type="string" required>
+  User's email address
+</ParamField>
+
+<ParamField path="password" type="[]byte" required>
+  Hashed password bytes (use bcrypt or similar)
+</ParamField>
+
+**Returns**: Pointer to a new User with auto-generated ID and CreatedAt timestamp
+
+**Example**:
+```go
+hashedPwd, _ := bcrypt.GenerateFromPassword([]byte("secret"), bcrypt.DefaultCost)
+user := user.NewUser("alice", "alice@example.com", hashedPwd)
+```
+
+**Source**: `internal/core/user/domain.go:17`
+
+## Repository Interface
+
+Defines the contract for user data persistence.
+
+**Source**: `internal/core/user/interfaces.go`
+
+```go
+type repository interface {
+    GetUser(username string) (*User, error)
+    AddUser(*User) (*User, error)
+    DeleteUser(uuid.UUID) error
+}
+```
+
+The repository interface must be implemented by the persistence layer (e.g., PostgreSQL, MongoDB, in-memory store).
+
+## Error Types
+
+The user package defines several error types for common failure scenarios.
+
+**Source**: `internal/core/user/service.go:9-14`
+
+```go
+var (
+    ErrUserNotFound   = errors.New("user not found")
+    ErrUsernameUnique = errors.New("an account with this username exists")
+    ErrDelete         = errors.New("failed to Delete user")
+    ErrEmailUnique    = errors.New("an account with this email exists")
+)
+```
+
+### Error Descriptions
+
+<ResponseField name="ErrUserNotFound" type="error">
+  Returned when GetUser cannot find a user with the specified username
+</ResponseField>
+
+<ResponseField name="ErrUsernameUnique" type="error">
+  Returned when AddUser attempts to create a user with an existing username
+</ResponseField>
+
+<ResponseField name="ErrEmailUnique" type="error">
+  Returned when AddUser attempts to create a user with an existing email
+</ResponseField>
+
+<ResponseField name="ErrDelete" type="error">
+  Returned when DeleteUser fails to remove a user from the database
+</ResponseField>
+
+### Error Handling Pattern
+
+```go
+import "errors"
+
+user, err := userService.GetUser("john_doe")
+if err != nil {
+    switch {
+    case errors.Is(err, user.ErrUserNotFound):
+        // Handle user not found (404)
+        return fmt.Errorf("no user found with that username")
+    default:
+        // Handle other errors (500)
+        return fmt.Errorf("database error: %w", err)
+    }
+}
+```
+
+## Security Considerations
+
+<Warning>
+Always hash passwords before storing them. Never store plain text passwords in the database.
+</Warning>
+
+**Recommended Password Hashing**:
+```go
+import "golang.org/x/crypto/bcrypt"
+
+// When creating a user
+hashedPassword, err := bcrypt.GenerateFromPassword(
+    []byte(plainPassword),
+    bcrypt.DefaultCost,
+)
+if err != nil {
+    return err
+}
+
+user := user.NewUser(username, email, hashedPassword)
+```
+
+**Password Verification**:
+```go
+// When authenticating
+user, err := userService.GetUser(username)
+if err != nil {
+    return err
+}
+
+err = bcrypt.CompareHashAndPassword(user.Password, []byte(providedPassword))
+if err != nil {
+    return errors.New("invalid password")
+}
+```
+
+## Usage in Application
+
+Typical user registration flow:
+
+```go
+func RegisterUser(service user.UserServiceApi, username, email, password string) error {
+    // Hash password
+    hashedPwd, err := bcrypt.GenerateFromPassword(
+        []byte(password),
+        bcrypt.DefaultCost,
+    )
+    if err != nil {
+        return fmt.Errorf("failed to hash password: %w", err)
+    }
+    
+    // Create user entity
+    newUser := user.NewUser(username, email, hashedPwd)
+    
+    // Add to database
+    _, err = service.AddUser(newUser)
+    if err != nil {
+        if errors.Is(err, user.ErrUsernameUnique) {
+            return fmt.Errorf("username '%s' is already taken", username)
+        }
+        if errors.Is(err, user.ErrEmailUnique) {
+            return fmt.Errorf("email '%s' is already registered", email)
+        }
+        return fmt.Errorf("registration failed: %w", err)
+    }
+    
+    return nil
+}
+```
+
+Typical user authentication flow:
+
+```go
+func AuthenticateUser(service user.UserServiceApi, username, password string) (*user.User, error) {
+    // Retrieve user
+    u, err := service.GetUser(username)
+    if err != nil {
+        if errors.Is(err, user.ErrUserNotFound) {
+            return nil, errors.New("invalid credentials")
+        }
+        return nil, err
+    }
+    
+    // Verify password
+    err = bcrypt.CompareHashAndPassword(u.Password, []byte(password))
+    if err != nil {
+        return nil, errors.New("invalid credentials")
+    }
+    
+    return u, nil
+}
+```

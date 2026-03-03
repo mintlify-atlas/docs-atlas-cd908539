@@ -1,80 +1,451 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart Guide
+description: Get Showdown Trivia running locally and play your first multiplayer trivia game in minutes
 ---
 
-## Get started in three steps
+## Get Started in Minutes
 
-Get your documentation site running locally and make your first customization.
+This guide will walk you through setting up Showdown Trivia locally and playing your first multiplayer trivia game. You'll create an account, configure a game room, and experience real-time competitive trivia.
 
-### Step 1: Set up your local environment
+<Steps>
+  <Step title="Prerequisites">
+    Ensure you have the following installed on your system:
+
+    <CodeGroup>
+    ```bash macOS (Homebrew)
+    # Install Go
+    brew install go
+
+    # Install MongoDB
+    brew tap mongodb/brew
+    brew install mongodb-community
+
+    # Start MongoDB
+    brew services start mongodb-community
+    ```
+
+    ```bash Ubuntu/Debian
+    # Install Go
+    sudo apt update
+    sudo apt install golang-go
+
+    # Install MongoDB
+    wget -qO - https://www.mongodb.org/static/pgp/server-6.0.asc | sudo apt-key add -
+    echo "deb [ arch=amd64,arm64 ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/6.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-6.0.list
+    sudo apt update
+    sudo apt install -y mongodb-org
+    sudo systemctl start mongod
+    ```
+
+    ```bash Windows (Chocolatey)
+    # Install Go
+    choco install golang
+
+    # Install MongoDB
+    choco install mongodb
+    ```
+    </CodeGroup>
+
+    <Note>
+      **Minimum Requirements**:
+      - Go 1.21 or higher
+      - MongoDB 4.4 or higher
+      - 512MB RAM (1GB recommended)
+    </Note>
+  </Step>
+
+  <Step title="Clone and Configure">
+    Clone the repository and set up your environment configuration:
+
+    ```bash
+    # Clone the repository
+    git clone https://github.com/Lafetz/multiplayer-trivia.git
+    cd multiplayer-trivia
+
+    # Create environment configuration
+    touch .env
+    ```
+
+    Configure your `.env` file with the following settings:
+
+    ```bash .env
+    # Database connection string
+    DB_URL=mongodb://localhost:27017/showdown-trivia
+
+    # Server port
+    PORT=8080
+
+    # Logging level: debug, info, warn, error
+    LOG_LEVEL=info
+
+    # Environment: dev or prod
+    ENV=dev
+    ```
+
+    <Accordion title="Environment Variable Details">
+      | Variable | Required | Description | Valid Values |
+      |----------|----------|-------------|-------------|
+      | `DB_URL` | Yes | MongoDB connection string | Any valid MongoDB URI |
+      | `PORT` | Yes | HTTP server port | Any valid port number |
+      | `LOG_LEVEL` | Yes | Application logging verbosity | `debug`, `info`, `warn`, `error` |
+      | `ENV` | Yes | Runtime environment | `dev`, `prod` |
+    </Accordion>
+
+    <Warning>
+      The application will fail to start if any required environment variables are missing or invalid. Configuration is validated at startup:
+
+      ```go
+      // Configuration validation from internal/config/config.go
+      func (c *Config) loadEnv() error {
+          if os.Getenv("DB_URL") == "" {
+              return ErrInvalidDbUrl
+          }
+          if os.Getenv("LOG_LEVEL") == "" {
+              return ErrLogLevel
+          }
+          // ... additional validation
+      }
+      ```
+    </Warning>
+  </Step>
+
+  <Step title="Install Dependencies and Build">
+    Install the required Go modules and build the application:
+
+    ```bash
+    # Download Go dependencies
+    go mod download
+
+    # Build the application
+    go build -o showdown-trivia ./cmd/web
+
+    # Run the application
+    ./showdown-trivia
+    ```
+
+    You should see output similar to:
+
+    ```
+    2026/03/03 10:30:45 INFO db connected
+    2026/03/03 10:30:45 INFO Starting server on :8080
+    ```
+
+    <Accordion title="Using Make (Alternative)">
+      If you prefer using Make for development:
+
+      ```bash
+      # Install development tools (Tailwind, Templ, Air for hot-reload)
+      make install-tools
+
+      # Run in development mode with hot-reload
+      make dev
+
+      # Build for production
+      make build
+      ```
+    </Accordion>
+
+    <Accordion title="Using Docker Compose (Alternative)">
+      For a containerized setup that includes MongoDB:
+
+      ```bash
+      # Build and start all services
+      docker compose up --build
+
+      # Run in detached mode
+      docker compose up -d
+
+      # View logs
+      docker compose logs -f
+
+      # Stop services
+      docker compose down
+      ```
+
+      Docker Compose automatically configures networking between the app and MongoDB.
+    </Accordion>
+  </Step>
+
+  <Step title="Create Your Account">
+    Navigate to the application and create your player account:
+
+    1. Open your browser to `http://localhost:8080`
+    2. Click **Sign Up** in the navigation
+    3. Fill out the registration form:
+       - **Username**: Your display name in games (3-20 characters)
+       - **Email**: Must be unique
+       - **Password**: Minimum 8 characters
+    4. Submit the form
+
+    <Frame>
+      <img src="https://raw.githubusercontent.com/Lafetz/multiplayer-trivia/main/docs/b.png" alt="Sign Up Page" />
+    </Frame>
+
+    The application uses secure password hashing:
+
+    ```go
+    // Password is hashed before storage
+    hashedPassword, err := hashPassword(form.Password)
+    u := user.NewUser(form.Username, form.Email, hashedPassword)
+    _, err = userService.AddUser(u)
+    ```
+
+    <Note>
+      Account validation happens in real-time. You'll see immediate feedback if your username or email is already taken, or if password requirements aren't met.
+    </Note>
+  </Step>
+
+  <Step title="Sign In">
+    After successful registration, sign in with your credentials:
+
+    1. Navigate to `http://localhost:8080/signin`
+    2. Enter your email and password
+    3. Click **Sign In**
+
+    Upon successful authentication, you'll be redirected to the home dashboard where you can create or join games.
+
+    <Frame>
+      <img src="https://raw.githubusercontent.com/Lafetz/multiplayer-trivia/main/docs/c.png" alt="Game Lobby" />
+    </Frame>
+  </Step>
+
+  <Step title="Create Your First Game">
+    Set up a new trivia game room:
+
+    1. From the home dashboard, click **Create Game**
+    2. Configure your game settings:
+
+    <ParamField path="category" type="integer" default="9">
+      Choose from 32+ trivia categories including:
+      - General Knowledge (9)
+      - Science & Nature (17)
+      - Sports (21)
+      - History (23)
+      - Geography (22)
+      - And many more!
+    </ParamField>
+
+    <ParamField path="amount" type="integer" default="10">
+      Number of questions in the game (1-50)
+      
+      Recommended: 10-15 questions for a 5-10 minute game
+    </ParamField>
+
+    <ParamField path="timer" type="integer" default="10">
+      Seconds per question (2-20)
+      
+      Shorter timers increase difficulty and excitement
+    </ParamField>
+
+    3. Click **Create Game Room**
+
+    The server validates your game configuration:
+
+    ```go
+    // Game validation from internal/web/form/game.go
+    if category < 0 || category > 32 {
+        f.Errors["category"] = "category can't be less 0 or greater than 32"
+    }
+    if amount < 1 || amount > 50 {
+        f.Errors["amount"] = "number of questions can't be less than 1 or greater than 50"
+    }
+    if time < 2 || time > 20 {
+        f.Errors["timer"] = "timer can't be less than 2 or greater than 20"
+    }
+    ```
+
+    <Note>
+      As the game owner, you control when the game starts. The game won't begin until you click **Start Game**, allowing time for other players to join.
+    </Note>
+  </Step>
+
+  <Step title="Invite Players or Join Existing Games">
+    **Option A: Invite Players to Your Game**
+    
+    Share your game room URL with friends:
+    ```
+    http://localhost:8080/join/{room-id}
+    ```
+
+    Players can join your room directly via this link. You'll see them appear in the player list in real-time.
+
+    **Option B: Join an Existing Game**
+
+    1. From the home dashboard, click **Browse Active Games**
+    2. View all available game rooms with:
+       - Game owner name
+       - Current player count
+       - Room ID
+    3. Click **Join** on any available game
+
+    ```go
+    // Active games are fetched via WebSocket
+    func ActiveGames(hub *ws.Hub, logger *slog.Logger) http.HandlerFunc {
+        return func(w http.ResponseWriter, r *http.Request) {
+            rooms := hub.ListRooms()
+            err := render.ActiveGames(w, r, rooms)
+        }
+    }
+    ```
+
+    <Warning>
+      You cannot join games that have already started. Only games in the lobby phase appear in the active games list.
+    </Warning>
+  </Step>
+
+  <Step title="Play the Game">
+    Once all players are ready:
+
+    1. **Game Owner**: Click **Start Game**
+    2. Questions appear simultaneously for all players
+    3. Select your answer before the timer runs out
+    4. Watch scores update in real-time after each question
+    5. See the final leaderboard when all questions are answered
+
+    <Frame>
+      <img src="https://raw.githubusercontent.com/Lafetz/multiplayer-trivia/main/docs/d.png" alt="Active Game" />
+    </Frame>
+
+    **Gameplay Mechanics:**
+
+    ```go
+    // Real-time game flow from internal/core/game/game.go
+    func (g *Game) AskQuestion(question entities.Question, doneCh chan struct{}) {
+        timer := time.NewTimer(g.timerSpan)
+        g.Message <- NewMessage(MsgQuestion, question)
+        
+        answers := make(map[string]string)
+        for {
+            select {
+            case answer := <-g.AnswerCh:
+                answers[answer.username] = answer.answer
+            case <-timer.C:
+                g.endOfQuestion(question, answers)
+                // Move to next question or end game
+            }
+        }
+    }
+    ```
+
+    <Accordion title="Scoring System">
+      - Each correct answer: **+1 point**
+      - Incorrect or missed answers: **0 points**
+      - Fastest correct answer: **No bonus** (all correct answers worth the same)
+      - Final scores determine winner(s)
+
+      Multiple players can tie for first place!
+    </Accordion>
+  </Step>
+
+  <Step title="View Results and Play Again">
+    After the final question:
+
+    1. The winner screen displays with final scores
+    2. All players are ranked by their score
+    3. Return to the home dashboard to create or join another game
+
+    <Note>
+      Want to play the same group again? The game owner can create a new room with the same settings, and players can rejoin using the new room link.
+    </Note>
+  </Step>
+</Steps>
+
+## Production Deployment
+
+Ready to deploy for public access? Check out our [Docker Deployment Guide](/deployment/docker) for:
+
+- Deploying to cloud platforms (Render, Railway, Fly.io)
+- Setting up SSL/TLS certificates
+- Configuring production environment variables
+- Scaling considerations for multiple concurrent games
+- MongoDB Atlas setup for managed database hosting
+
+## Monitoring Your Instance
+
+Showdown Trivia includes built-in Prometheus metrics for monitoring:
+
+```bash
+# Access metrics endpoint
+curl http://localhost:8080/metrics
+```
+
+**Available Metrics:**
+- `app_websocket_connections`: Current active WebSocket connections
+- `app_request_game_duration`: Histogram of game creation request durations
+
+<Tip>
+  For production deployments, integrate these metrics with Prometheus and Grafana for comprehensive monitoring dashboards.
+</Tip>
+
+## Troubleshooting
 
 <AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
+  <Accordion title="Database Connection Failed">
+    **Error**: `db url is invalid` or connection timeout
+
+    **Solutions**:
+    - Verify MongoDB is running: `mongosh` (should connect successfully)
+    - Check your `DB_URL` in `.env` matches your MongoDB configuration
+    - For Docker: Ensure the MongoDB container is running: `docker ps`
+    - Test connection manually:
+      ```bash
+      mongosh "mongodb://localhost:27017/showdown-trivia"
+      ```
   </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
+
+  <Accordion title="Port Already in Use">
+    **Error**: `address already in use`
+
+    **Solutions**:
+    - Change the `PORT` in your `.env` file to an available port
+    - Find and stop the process using port 8080:
+      ```bash
+      # macOS/Linux
+      lsof -ti:8080 | xargs kill -9
+
+      # Windows
+      netstat -ano | findstr :8080
+      taskkill /PID <PID> /F
+      ```
+  </Accordion>
+
+  <Accordion title="WebSocket Connection Failed">
+    **Error**: Games don't load or players can't join
+
+    **Solutions**:
+    - Check browser console for WebSocket errors
+    - Ensure your firewall allows WebSocket connections
+    - If behind a proxy, ensure WebSocket upgrade headers are forwarded
+    - Verify the application is running: `curl http://localhost:8080/home`
+  </Accordion>
+
+  <Accordion title="Questions Not Loading">
+    **Error**: Game created but questions don't appear
+
+    **Solutions**:
+    - The application fetches questions from OpenTDB API - check your internet connection
+    - Verify API is accessible:
+      ```bash
+      curl "https://opentdb.com/api.php?amount=10&type=multiple"
+      ```
+    - Check logs for API errors: `LOG_LEVEL=debug` in `.env`
+    - Some categories may have limited questions - try different categories
   </Accordion>
 </AccordionGroup>
 
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
+## Next Steps
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Browse Features" icon="list" href="/features/real-time-gameplay">
+    Explore all available features and capabilities
+  </Card>
+  <Card title="API Integration" icon="code" href="/api/trivia-api-integration">
+    Integrate with Showdown Trivia's services
+  </Card>
+  <Card title="Contributing" icon="code-pull-request" href="https://github.com/Lafetz/multiplayer-trivia">
+    Contribute to the project on GitHub
+  </Card>
+  <Card title="Deployment" icon="rocket" href="/deployment/docker">
+    Deploy to production environments
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

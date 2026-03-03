@@ -1,0 +1,409 @@
+---
+title: 'Scoring System'
+description: 'Live score tracking and winner determination based on correct answers'
+icon: 'trophy'
+---
+
+## Overview
+
+The scoring system tracks player performance throughout the game, awards points for correct answers, and determines winners when all questions are completed.
+
+## Score Tracking
+
+### Player Score Structure
+
+Each player in a game has a score object:
+
+```go
+type Player struct {
+    Username string
+    Score    int
+}
+```
+
+Players start with a score of 0 and earn points for each correct answer.
+
+**Player model**: `internal/core/game/domain.go:21-24`
+
+### Initialization
+
+When a game starts, all connected players are converted to Player instances:
+
+```go
+var players []*game.Player
+for c := range room.clients {
+    players = append(players, game.NewPlayer(c.Username))
+}
+```
+
+Each player initialized with:
+- **Username** - From WebSocket session
+- **Score** - Set to 0
+
+**Player initialization**: `internal/web/ws/client.go:79-82`, `internal/core/game/domain.go:26-30`
+
+## Answer Submission
+
+### How Answers Work
+
+Players submit answers while the question timer is active:
+
+<Steps>
+  <Step title="Player selects answer">
+    Sends WebSocket event: `{"type": "send_answer", "payload": "answer_text"}`
+  </Step>
+  <Step title="Answer received">
+    Server creates Answer object with username and answer text
+  </Step>
+  <Step title="Stored temporarily">
+    Answer added to map while timer runs
+  </Step>
+  <Step title="Timer expires">
+    No more answers accepted for this question
+  </Step>
+  <Step title="Scoring begins">
+    System compares all answers against correct answer
+  </Step>
+</Steps>
+
+**Answer handling**: `internal/web/ws/client.go:85-93`
+
+### Answer Structure
+
+Each answer contains:
+
+```go
+type Answer struct {
+    username string  // Who submitted it
+    answer   string  // Their answer text
+}
+```
+
+**Answer model**: `internal/core/game/domain.go:33-36`
+
+### Answer Collection
+
+During each question, answers are collected in a map:
+
+```go
+answers := make(map[string]string)
+// Key: username, Value: answer
+```
+
+The game waits for either:
+- Timer expiration
+- All players to submit (implementation waits for timer)
+
+**Collection logic**: `internal/core/game/game.go:61-67`
+
+<Info>
+Players can only submit one answer per question. The last submission before timer expiration is used.
+</Info>
+
+## Scoring Logic
+
+### When Scoring Occurs
+
+Scoring happens at the end of each question when the timer expires:
+
+```go
+case <-timer.C:
+    g.endOfQuestion(question, answers)
+```
+
+**Timer handling**: `internal/core/game/game.go:69-70`
+
+### Score Calculation
+
+The `endOfQuestion` method evaluates all submitted answers:
+
+<Steps>
+  <Step title="Timer expires">
+    Answer submission closes
+  </Step>
+  <Step title="Iterate answers">
+    Loop through all submitted answers
+  </Step>
+  <Step title="Compare to correct answer">
+    Check if answer matches question's CorrectAnswer field
+  </Step>
+  <Step title="Award points">
+    If correct, increment player's score by 1
+  </Step>
+  <Step title="Broadcast scores">
+    Updated scores sent to all players with next question
+  </Step>
+</Steps>
+
+**Scoring implementation**: `internal/core/game/game.go:37-44`
+
+### Point System
+
+<AccordionGroup>
+  <Accordion title="Correct Answer">
+    **Points Awarded**: +1
+    
+    A player's score increments by one for each correct answer.
+    
+    ```go
+    if question.CorrectAnswer == answer {
+        player.Score++
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Incorrect Answer">
+    **Points Awarded**: 0
+    
+    No penalty for wrong answers. Score remains unchanged.
+  </Accordion>
+  
+  <Accordion title="No Answer">
+    **Points Awarded**: 0
+    
+    If a player doesn't submit before timer expires, treated as incorrect.
+  </Accordion>
+</AccordionGroup>
+
+**Score increment**: `internal/core/game/game.go:46-53`
+
+### Thread-Safe Scoring
+
+The Game struct uses `sync.RWMutex` to prevent race conditions during concurrent score updates:
+
+```go
+type Game struct {
+    Players []*Player
+    sync.RWMutex
+}
+```
+
+This ensures scores are accurately tracked even with multiple simultaneous answer submissions.
+
+**Concurrency safety**: `internal/core/game/game.go:14-23`
+
+## Live Score Display
+
+Scores are broadcast to players in real-time:
+
+### Score Updates with Questions
+
+Each question message includes current scores for all players:
+
+```go
+render.RenderQuestion(question, currentQues, totalQuestions, timer, g.Players)
+```
+
+Players see:
+- Their own current score
+- All other players' scores  
+- Question progress (e.g., "Question 3 of 10")
+
+**Question rendering**: `internal/web/ws/rooms.go:46`
+
+### Real-Time Broadcast
+
+Score updates sent via WebSocket to all room participants:
+
+```go
+func (r *Room) sendMsg(msg []byte) {
+    for c := range r.clients {
+        c.egress <- msg
+    }
+}
+```
+
+**Broadcasting**: `internal/web/ws/rooms.go:22-28`
+
+<Note>
+All players see score updates simultaneously after each question, maintaining competitive transparency.
+</Note>
+
+## Winner Determination
+
+### End of Game
+
+When the last question's timer expires:
+
+```go
+if len(g.Questions) == (g.CurrentQues) {
+    g.DisplayWinner()
+}
+```
+
+**Game end check**: `internal/core/game/game.go:72-74`
+
+### Winner Calculation
+
+The `DisplayWinner` method creates a final scoreboard:
+
+<Steps>
+  <Step title="Create winners map">
+    Map of username → final score
+  </Step>
+  <Step title="Add all players">
+    Include every player regardless of score
+  </Step>
+  <Step title="Send game_end message">
+    Broadcast final scores to all players
+  </Step>
+  <Step title="Close game">
+    Shut down game message channel
+  </Step>
+</Steps>
+
+**Winner logic**: `internal/core/game/game.go:86-95`
+
+### Winners Map
+
+The final scores are represented as:
+
+```go
+type Winners map[string]int
+// Key: username, Value: final score
+```
+
+Example:
+```json
+{
+  "player1": 8,
+  "player2": 6,
+  "player3": 9
+}
+```
+
+**Winners type**: `internal/core/game/domain.go:49`
+
+### Handling Ties
+
+<Info>
+The current implementation doesn't have special tie-breaking logic. Multiple players can have the same high score, making them all winners.
+</Info>
+
+The client UI determines how to display tied winners based on the scores map.
+
+### Game End Message
+
+The final message sent to all players:
+
+```go
+g.Message <- NewMessage(MsgGameEnd, winners)
+```
+
+Message type: `game_end`  
+Payload: Winners map with all player scores
+
+**Message sending**: `internal/core/game/game.go:92`, `internal/web/ws/rooms.go:64-74`
+
+## Score Persistence
+
+<Warning>
+**Current Implementation**: Scores are **not persisted** to the database.
+
+Scores exist only for the duration of the game session. When the game ends and the room is removed, all score data is lost.
+</Warning>
+
+For persistent leaderboards or player statistics, you would need to:
+1. Save final scores to database before room removal
+2. Create a statistics service to aggregate historical data
+3. Add endpoints to retrieve player history
+
+## Question Progress Tracking
+
+Along with scores, the game tracks question progress:
+
+```go
+type Game struct {
+    Questions   []entities.Question
+    CurrentQues int  // 1-indexed question number
+    // ...
+}
+```
+
+### Progress Updates
+
+- **CurrentQues** increments after each question
+- Sent to players with each new question
+- Used to display "Question X of Y"
+
+**Progress tracking**: `internal/core/game/game.go:31`
+
+## Game State
+
+The game maintains state throughout scoring:
+
+```go
+type Game struct {
+    Questions   []entities.Question  // All questions
+    Players     []*Player           // All players with scores
+    CurrentQues int                 // Current question index
+    AnswerCh    chan Answer         // Incoming answers
+    Message     chan Message        // Outgoing updates
+    timerSpan   time.Duration       // Time per question
+    GameStarted bool               // Has game begun?
+}
+```
+
+**Game state**: `internal/core/game/game.go:14-23`
+
+## Scoring Flow Summary
+
+<Steps>
+  <Step title="Game starts">
+    All players initialized with score = 0
+  </Step>
+  <Step title="Question broadcast">
+    Timer starts, players see question and current scores
+  </Step>
+  <Step title="Answers collected">
+    Players submit via WebSocket, stored in temporary map
+  </Step>
+  <Step title="Timer expires">
+    Answer collection ends
+  </Step>
+  <Step title="Scoring">
+    Correct answers awarded +1 point
+  </Step>
+  <Step title="Next question">
+    Updated scores broadcast with next question
+  </Step>
+  <Step title="Game ends">
+    Final scores sent as Winners map, room removed
+  </Step>
+</Steps>
+
+## Implementation Notes
+
+### Channel-Based Communication
+
+Scoring uses Go channels for thread-safe message passing:
+
+- **AnswerCh** - Receives player answers
+- **Message** - Sends score updates to WebSocket layer
+
+This design prevents race conditions and enables concurrent answer processing.
+
+**Channel usage**: `internal/core/game/game.go:18-19`
+
+### Blocking Game Loop
+
+The game runs in a goroutine with a blocking select statement:
+
+```go
+for {
+    select {
+    case answer := <-g.AnswerCh:
+        // Handle answer
+    case <-timer.C:
+        // Score and move to next question
+    }
+}
+```
+
+This ensures answers are processed in the order received and scoring happens exactly when the timer expires.
+
+**Game loop**: `internal/core/game/game.go:63-83`
+
+<Note>
+The scoring system is designed for fairness: all players have the same time to answer, and scoring happens simultaneously for everyone after each question timer.
+</Note>

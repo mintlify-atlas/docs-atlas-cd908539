@@ -1,0 +1,475 @@
+---
+title: 'Monitoring'
+description: 'Prometheus metrics, Grafana dashboards, and observability'
+---
+
+## Overview
+
+Showdown Trivia uses Prometheus for metrics collection and Grafana for visualization. The monitoring stack is fully containerized and can be started with Docker Compose.
+
+## Metrics Architecture
+
+Metrics are implemented using the Prometheus Go client library and exposed via the `/metrics` endpoint.
+
+### Metrics Endpoint
+
+**URL:** `http://localhost:8080/metrics`
+
+**Implementation:** `internal/web/routes.go:22`
+```go
+a.router.Handle("/metrics", promhttp.HandlerFor(a.reg, promhttp.HandlerOpts{}))
+```
+
+## Available Metrics
+
+The application exposes two custom metrics defined in `internal/web/metrics/metrics.go`.
+
+### 1. WebSocket Connections (Gauge)
+
+**Metric Name:** `app_websocket_connections`
+
+**Type:** Gauge
+
+**Description:** Total number of active WebSocket connections
+
+**Use Cases:**
+- Monitor concurrent players
+- Detect connection spikes
+- Capacity planning
+- Alert on unusual connection patterns
+
+**Implementation:**
+```go
+WebsocketConns: prometheus.NewGauge(prometheus.GaugeOpts{
+    Namespace: "app",
+    Name:      "websocket_connections",
+    Help:      "total number of active websocket connections",
+})
+```
+
+**Usage in Code:**
+```go
+// Increment when client connects
+app.m.WebsocketConns.Inc()
+
+// Decrement when client disconnects
+app.m.WebsocketConns.Dec()
+
+// Set to specific value
+app.m.WebsocketConns.Set(42)
+```
+
+### 2. Request Duration (Histogram)
+
+**Metric Name:** `app_request_game_duration`
+
+**Type:** Histogram
+
+**Description:** Request duration when creating new game and requesting form
+
+**Labels:**
+- `method` - HTTP method (GET, POST)
+
+**Buckets:** Linear buckets from 0.05s to 1.0s in 0.05s increments
+- 0.05s, 0.10s, 0.15s, ..., 1.00s (20 buckets)
+
+**Use Cases:**
+- Track game creation performance
+- Identify slow requests
+- SLA monitoring
+- Detect performance regressions
+
+**Implementation:**
+```go
+ReqDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+    Namespace: "app",
+    Name:      "request_game_duration",
+    Help:      "request duration when creating new game and requesting form",
+    Buckets:   prometheus.LinearBuckets(0.05, 0.05, 20),
+}, []string{"method"})
+```
+
+**Usage in Code:** `internal/web/middleware.go:49`
+```go
+func (app *App) requestDuration(next http.HandlerFunc) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        now := time.Now()
+        next(w, r)
+        app.m.ReqDuration.With(prometheus.Labels{"method": r.Method}).Observe(time.Since(now).Seconds())
+    }
+}
+```
+
+**Applied to Routes:**
+- `GET /create` - Display game creation form
+- `POST /create` - Process game creation
+
+## Metrics Initialization
+
+Metrics are initialized in the application bootstrap (`cmd/web/main.go:44`):
+
+```go
+reg := prometheus.NewRegistry()
+app := web.NewApp(cfg.Port, logger, userService, store, questionService, reg)
+```
+
+The registry is passed to the web app, which creates the metrics instance (`internal/web/app.go:37`):
+
+```go
+m := metrics.NewMetrics(reg)
+```
+
+## Prometheus Setup
+
+### Configuration
+
+**File:** `deployments/prometheus/prometheus.yml`
+
+```yaml
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: app
+    static_configs:
+      - targets: ["app:8080"]
+```
+
+**Scrape Configuration:**
+- **Job Name:** `app`
+- **Target:** `app:8080` (container name in Docker network)
+- **Scrape Interval:** 5 seconds
+- **Evaluation Interval:** 5 seconds
+- **Metrics Path:** `/metrics` (default)
+
+### Docker Compose Configuration
+
+**File:** `compose.yaml`
+
+```yaml
+prometheus:
+  image: prom/prometheus:v2.40.4
+  ports:
+    - 9090:9090
+  volumes:
+    - ./deployments/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+```
+
+**Access Prometheus:**
+- **URL:** http://localhost:9090
+- **Targets:** http://localhost:9090/targets
+- **Config:** http://localhost:9090/config
+
+## Grafana Setup
+
+### Configuration
+
+**Datasource File:** `deployments/grafana/datasources.yaml`
+
+```yaml
+apiVersion: 1
+datasources:
+  - name: Main
+    type: prometheus
+    url: http://prometheus:9090
+    isDefault: true
+```
+
+**Features:**
+- Prometheus datasource pre-configured
+- Automatic provisioning on startup
+- No manual datasource setup required
+
+### Docker Compose Configuration
+
+```yaml
+grafana:
+  image: grafana/grafana:9.3.0
+  ports:
+    - 3000:3000
+  environment:
+    - GF_SECURITY_ADMIN_USER=admin
+    - GF_SECURITY_ADMIN_PASSWORD=devops123
+  volumes:
+    - ./deployments/grafana/datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
+    - grafana:/var/lib/grafana
+```
+
+**Access Grafana:**
+- **URL:** http://localhost:3000
+- **Username:** `admin`
+- **Password:** `devops123`
+
+## Starting the Monitoring Stack
+
+### Start All Services
+
+```bash
+docker compose up -d
+```
+
+This starts:
+- Application (port 8080)
+- MongoDB (port 27017)
+- Prometheus (port 9090)
+- Grafana (port 3000)
+
+### Verify Services
+
+```bash
+# Check all containers are running
+docker compose ps
+
+# Check Prometheus can scrape app
+curl http://localhost:9090/api/v1/targets
+
+# Check metrics endpoint
+curl http://localhost:8080/metrics
+```
+
+## Creating Grafana Dashboards
+
+### Access Dashboard Editor
+
+1. Navigate to http://localhost:3000
+2. Login with `admin` / `devops123`
+3. Click **Dashboards** → **New Dashboard**
+4. Click **Add visualization**
+5. Select **Main** datasource (Prometheus)
+
+### Example Queries
+
+#### Active WebSocket Connections
+
+```promql
+app_websocket_connections
+```
+
+**Panel Type:** Time series or Stat
+
+**Visualization:**
+- Current value
+- Line chart over time
+- Gauge with thresholds
+
+#### Request Duration - Average
+
+```promql
+rate(app_request_game_duration_sum[5m]) / rate(app_request_game_duration_count[5m])
+```
+
+**Panel Type:** Time series
+
+**Breakdown by Method:**
+```promql
+rate(app_request_game_duration_sum[5m]) by (method) / rate(app_request_game_duration_count[5m]) by (method)
+```
+
+#### Request Duration - Percentiles
+
+**95th Percentile:**
+```promql
+histogram_quantile(0.95, rate(app_request_game_duration_bucket[5m]))
+```
+
+**99th Percentile:**
+```promql
+histogram_quantile(0.99, rate(app_request_game_duration_bucket[5m]))
+```
+
+#### Request Rate
+
+```promql
+rate(app_request_game_duration_count[5m])
+```
+
+**By Method:**
+```promql
+rate(app_request_game_duration_count[5m]) by (method)
+```
+
+#### Requests in SLA (< 200ms)
+
+```promql
+sum(rate(app_request_game_duration_bucket{le="0.2"}[5m])) / sum(rate(app_request_game_duration_count[5m]))
+```
+
+## Sample Dashboard Layout
+
+### Row 1: Overview
+- **Panel 1:** Active WebSocket Connections (Stat)
+- **Panel 2:** Request Rate (Stat)
+- **Panel 3:** Average Response Time (Stat)
+
+### Row 2: Request Performance
+- **Panel 4:** Request Duration Over Time (Time series)
+- **Panel 5:** Request Duration by Method (Time series)
+- **Panel 6:** Request Duration Heatmap (Heatmap)
+
+### Row 3: Latency Breakdown
+- **Panel 7:** P50, P95, P99 Latency (Time series)
+- **Panel 8:** Requests by Duration Bucket (Bar gauge)
+
+## Alerting
+
+### Prometheus Alert Rules
+
+Create `deployments/prometheus/alerts.yml`:
+
+```yaml
+groups:
+  - name: showdown_trivia
+    interval: 30s
+    rules:
+      - alert: HighWebSocketConnections
+        expr: app_websocket_connections > 1000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High number of WebSocket connections"
+          description: "{{ $value }} active connections"
+
+      - alert: SlowGameCreation
+        expr: histogram_quantile(0.95, rate(app_request_game_duration_bucket[5m])) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Slow game creation requests"
+          description: "P95 latency is {{ $value }}s"
+
+      - alert: AppDown
+        expr: up{job="app"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Application is down"
+          description: "Cannot scrape metrics from app"
+```
+
+Update `prometheus.yml`:
+```yaml
+rule_files:
+  - "alerts.yml"
+```
+
+### Grafana Alerts
+
+1. Create panel with query
+2. Click **Alert** tab
+3. Configure alert condition
+4. Set notification channel
+5. Save dashboard
+
+## Adding Custom Metrics
+
+### Step 1: Define Metric
+
+Edit `internal/web/metrics/metrics.go`:
+
+```go
+type Metrics struct {
+    WebsocketConns prometheus.Gauge
+    ReqDuration    *prometheus.HistogramVec
+    GameCreations  prometheus.Counter  // New metric
+}
+
+func NewMetrics(req prometheus.Registerer) *Metrics {
+    m := &Metrics{
+        // ... existing metrics ...
+        GameCreations: prometheus.NewCounter(prometheus.CounterOpts{
+            Namespace: "app",
+            Name:      "game_creations_total",
+            Help:      "total number of games created",
+        }),
+    }
+    req.MustRegister(m.WebsocketConns, m.ReqDuration, m.GameCreations)
+    return m
+}
+```
+
+### Step 2: Instrument Code
+
+In your handler:
+
+```go
+func (app *App) createGame(w http.ResponseWriter, r *http.Request) {
+    // ... game creation logic ...
+    app.m.GameCreations.Inc()
+    // ... rest of handler ...
+}
+```
+
+### Step 3: Verify Metric
+
+```bash
+curl http://localhost:8080/metrics | grep game_creations
+```
+
+## Best Practices
+
+1. **Use Appropriate Metric Types**
+   - Counter: Monotonically increasing (requests, errors)
+   - Gauge: Can go up or down (connections, memory)
+   - Histogram: Distributions (latency, response size)
+   - Summary: Similar to histogram, calculated client-side
+
+2. **Label Cardinality**
+   - Keep labels low cardinality
+   - Avoid user IDs, session IDs as labels
+   - Use method, status, endpoint as labels
+
+3. **Naming Conventions**
+   - Use `<namespace>_<name>_<unit>` format
+   - Counters should end with `_total`
+   - Use base units (seconds, bytes, not milliseconds)
+
+4. **Dashboard Organization**
+   - Group related metrics
+   - Use consistent time ranges
+   - Add descriptions to panels
+   - Use variables for filtering
+
+5. **Alert Tuning**
+   - Set appropriate thresholds
+   - Use `for` clauses to avoid flapping
+   - Test alerts in non-production
+   - Document alert runbooks
+
+## Troubleshooting
+
+### Metrics Not Showing
+
+```bash
+# Check metrics endpoint
+curl http://localhost:8080/metrics
+
+# Check Prometheus targets
+open http://localhost:9090/targets
+
+# Check Prometheus logs
+docker compose logs prometheus
+```
+
+### Grafana Can't Connect to Prometheus
+
+```bash
+# Check Grafana logs
+docker compose logs grafana
+
+# Check datasource config
+docker compose exec grafana cat /etc/grafana/provisioning/datasources/datasources.yaml
+
+# Test connection from Grafana container
+docker compose exec grafana wget -O- http://prometheus:9090/-/healthy
+```
+
+### High Cardinality Warning
+
+If Prometheus shows cardinality warnings:
+- Review metric labels
+- Remove high-cardinality labels
+- Use recording rules to pre-aggregate

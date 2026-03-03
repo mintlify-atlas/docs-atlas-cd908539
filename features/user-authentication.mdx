@@ -1,0 +1,265 @@
+---
+title: 'User Authentication'
+description: 'Secure user authentication with session-based login and password hashing'
+icon: 'lock'
+---
+
+## Overview
+
+Showdown Trivia implements a secure authentication system using bcrypt password hashing and cookie-based session management. Users must be authenticated to create or join game rooms.
+
+## User Registration
+
+### Sign Up Flow
+
+New users register through the signup form with the following fields:
+
+- **Username** - Unique identifier for the player
+- **Email** - Must be unique across all users
+- **Password** - Hashed using bcrypt before storage
+
+<Steps>
+  <Step title="User submits signup form">
+    POST request to `/signup` with username, email, and password
+  </Step>
+  <Step title="Form validation">
+    Server validates all fields meet requirements
+  </Step>
+  <Step title="Password hashing">
+    Password hashed with bcrypt before database storage
+  </Step>
+  <Step title="User creation">
+    New user record created with UUID and timestamp
+  </Step>
+  <Step title="Success confirmation">
+    User directed to signin page
+  </Step>
+</Steps>
+
+**Endpoints**:
+- `GET /signup` - Display registration form
+- `POST /signup` - Process registration
+
+**Handler code**: `internal/web/handlers/signup.go:15-83`
+
+### Validation Rules
+
+The signup form enforces validation on the client and server:
+
+<AccordionGroup>
+  <Accordion title="Username requirements">
+    - Must be unique
+    - Cannot be empty
+    - Used as display name in games
+    
+    **Error**: "username must be unique" if already exists
+  </Accordion>
+  
+  <Accordion title="Email requirements">
+    - Must be valid email format
+    - Must be unique across all users
+    - Used for account identification
+    
+    **Error**: "email must be unique" if already registered
+  </Accordion>
+  
+  <Accordion title="Password requirements">
+    - Hashed using bcrypt with default cost
+    - Never stored in plain text
+    - Verified during login
+  </Accordion>
+</AccordionGroup>
+
+**Validation code**: `internal/web/form/user.go`, `internal/web/handlers/signup.go:47-51`
+
+## User Login
+
+### Sign In Flow
+
+Existing users authenticate through the signin form:
+
+<Steps>
+  <Step title="Submit credentials">
+    POST request to `/signin` with email and password
+  </Step>
+  <Step title="User lookup">
+    System retrieves user record by email
+  </Step>
+  <Step title="Password verification">
+    Submitted password compared against stored bcrypt hash
+  </Step>
+  <Step title="Session creation">
+    Cookie-based session created with authenticated flag
+  </Step>
+  <Step title="Redirect to home">
+    User redirected to `/home` dashboard
+  </Step>
+</Steps>
+
+**Endpoints**:
+- `GET /signin` - Display login form  
+- `POST /signin` - Process authentication
+
+**Handler code**: `internal/web/handlers/signin.go:18-82`
+
+### Authentication Errors
+
+<Warning>
+For security, the system returns the same error message for both invalid email and incorrect password: "Incorrect Email or Password"
+
+This prevents attackers from determining which accounts exist.
+</Warning>
+
+**Error responses**:
+- User not found: 401 Unauthorized
+- Wrong password: 401 Unauthorized
+- Invalid form data: 422 Unprocessable Entity
+
+**Error handling**: `internal/web/handlers/signin.go:47-70`
+
+## Session Management
+
+Sessions are managed using the Gorilla Sessions library with encrypted cookies.
+
+### Session Storage
+
+When a user logs in successfully:
+
+```go
+session.Values["authenticated"] = true
+session.Values["username"] = userData.Username
+```
+
+The session cookie is named `user-session` and stores:
+- **authenticated**: Boolean flag indicating login status
+- **username**: The user's display name for game rooms
+
+**Session creation**: `internal/web/handlers/signin.go:71-78`
+
+### Session Security
+
+<Info>
+Sessions use encrypted cookies with secure storage via Gorilla Sessions CookieStore.
+
+**Configuration**: Set in application initialization
+</Info>
+
+### Protected Routes
+
+Certain routes require authentication and are protected by middleware:
+
+- `/home` - User dashboard
+- `/create` - Create game form
+- `/activegames` - List of joinable games
+- `/wscreate` - WebSocket room creation
+- `/wsjoin/{id}` - WebSocket room joining
+
+**Middleware implementation**: `internal/web/middleware.go:12-28`
+
+### How Authentication Works
+
+The `requireAuth` middleware checks every protected request:
+
+<Steps>
+  <Step title="Retrieve session">
+    Load session cookie from request
+  </Step>
+  <Step title="Check authenticated flag">
+    Verify `session.Values["authenticated"] == true`
+  </Step>
+  <Step title="Extract username">
+    Get username from session values
+  </Step>
+  <Step title="Add to context">
+    Username added to request context for handlers
+  </Step>
+  <Step title="Continue or redirect">
+    Allow access if authenticated, otherwise redirect to `/signin`
+  </Step>
+</Steps>
+
+**Route protection**: `internal/web/routes.go:34-42`
+
+## Sign Out
+
+Users can log out to end their session:
+
+**Endpoint**: `POST /signout`
+
+The signout process:
+1. Retrieves current session
+2. Sets `authenticated` flag to `false`  
+3. Saves session
+4. Redirects to signin page
+
+**Handler code**: `internal/web/handlers/signout.go:10-26`
+
+<Note>
+Signing out invalidates the session but doesn't disconnect active WebSocket connections. Players in games will complete their current game.
+</Note>
+
+## User Model
+
+The User entity stores:
+
+```go
+type User struct {
+    Id        uuid.UUID  // Unique identifier
+    Username  string     // Display name
+    Email     string     // Login credential
+    Password  []byte     // Bcrypt hash
+    CreatedAt time.Time  // Registration timestamp
+}
+```
+
+**Model definition**: `internal/core/user/domain.go:9-15`
+
+## Password Security
+
+### Hashing
+
+Passwords are hashed using bcrypt with default cost factor:
+
+- **Algorithm**: bcrypt
+- **Cost**: Default (recommended security level)
+- **Storage**: Hash stored as byte array
+- **Verification**: Uses constant-time comparison
+
+<Warning>
+**Security Best Practices**
+
+✅ Passwords are hashed with bcrypt  
+✅ Plain text passwords never stored  
+✅ Constant-time comparison prevents timing attacks  
+✅ Unique validation prevents username enumeration  
+</Warning>
+
+**Hash implementation**: `internal/web/handlers/hashpassword.go`
+
+## Environment Configuration
+
+Authentication requires environment variables:
+
+- `ENV` - Environment mode (dev/prod)
+- `DB_URL` - Database connection for user storage
+- `LOG_LEVEL` - Logging verbosity
+- `PORT` - Server port
+
+**Config loading**: `internal/config/config.go:31-71`
+
+## Integration with Games
+
+Once authenticated, the username from the session is used to:
+
+1. **Identify players** in WebSocket rooms
+2. **Track scores** during gameplay
+3. **Display usernames** to other players
+4. **Determine room ownership** for game controls
+
+The username is extracted from session context in handlers:
+
+```go
+username, ok := r.Context().Value(UsernameKey).(string)
+```
+
+**Context usage**: `internal/web/handlers/game.go:26-29`, `internal/web/handlers/game.go:130-133`

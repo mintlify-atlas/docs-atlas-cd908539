@@ -1,0 +1,367 @@
+---
+title: "System Architecture Overview"
+description: "Comprehensive overview of Showdown Trivia's architecture, components, and request flow"
+---
+
+## High-Level Architecture
+
+Showdown Trivia is built as a real-time multiplayer trivia game using Go, following a clean architecture pattern with clear separation of concerns. The system consists of several key layers:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    HTTP Server                          │
+│              (Go net/http + Gorilla)                    │
+└────────────────────┬────────────────────────────────────┘
+                     │
+        ┌────────────┴────────────┐
+        │                         │
+┌───────▼───────┐        ┌───────▼────────┐
+│  Web Layer    │        │  WebSocket Hub │
+│  (handlers)   │        │  (real-time)   │
+└───────┬───────┘        └───────┬────────┘
+        │                        │
+        └────────┬───────────────┘
+                 │
+        ┌────────▼─────────┐
+        │   Core Services  │
+        │  (business logic)│
+        └────────┬─────────┘
+                 │
+    ┌────────────┼────────────┐
+    │            │            │
+┌───▼───┐  ┌────▼────┐  ┌────▼─────┐
+│MongoDB│  │Trivia   │  │  Logger  │
+│  DB   │  │API      │  │Prometheus│
+└───────┘  └─────────┘  └──────────┘
+```
+
+## Component Breakdown
+
+The application is initialized in `cmd/web/main.go:18` and follows this startup sequence:
+
+### 1. Configuration Layer
+
+**Package:** `internal/config`
+
+Loads environment variables and validates configuration:
+- `PORT`: HTTP server port
+- `DB_URL`: MongoDB connection string
+- `LOG_LEVEL`: Logging verbosity (debug, info, warn, error)
+- `ENV`: Environment mode (dev/prod)
+
+<Accordion title="Configuration loading code">
+```go
+// config/config.go:72
+func NewConfig() (*Config, error) {
+    config := Config{}
+    if err := config.loadEnv(); err != nil {
+        return nil, err
+    }
+    return &config, nil
+}
+```
+</Accordion>
+
+### 2. Repository Layer
+
+**Package:** `internal/repository`
+
+Handles all database operations using MongoDB:
+- Connection management with connection pooling
+- User repository with unique indexes on username and email
+- Graceful disconnection with timeout
+
+**Key files:**
+- `store.go:18` - Database initialization
+- `store.go:42` - Store creation with indexes
+- `user.go` - User data access operations
+
+<Note>
+The repository layer uses MongoDB with unique indexes to enforce data integrity at the database level.
+</Note>
+
+### 3. Core Services Layer
+
+**Package:** `internal/core`
+
+Contains business logic organized into domain services:
+
+#### User Service
+**Location:** `internal/core/user/service.go`
+
+Manages user operations:
+- User retrieval and authentication
+- User registration
+- User deletion
+
+```go
+// user/service.go:20
+func NewUserService(repo repository) *UserService {
+    return &UserService{repo: repo}
+}
+```
+
+#### Question Service
+**Location:** `internal/core/question/service.go`
+
+Fetches trivia questions:
+- Retrieves questions from external Trivia API
+- Fetches available categories
+- Delegates to trivia API client
+
+#### Game Service
+**Location:** `internal/core/game/game.go`
+
+Core game logic (detailed in [Game Engine](/architecture/game-engine)):
+- Question flow management
+- Answer collection via channels
+- Scoring and winner calculation
+- Timer-based progression
+
+### 4. External API Client
+
+**Package:** `internal/trivia_api`
+**Location:** `trivia_api.go:37`
+
+Integrates with [OpenTDB](https://opentdb.com) for trivia questions:
+- Fetches multiple-choice questions by category
+- Retrieves available categories
+- Shuffles answer options randomly
+- Error handling for API responses
+
+```go
+// trivia_api.go:37
+func NewTriviaClient() *triviaClient {
+    return &triviaClient{
+        baseURL: "https://opentdb.com",
+    }
+}
+```
+
+### 5. Web Layer
+
+**Package:** `internal/web`
+
+#### App Structure
+**Location:** `web/app.go:23`
+
+The main application struct coordinates all components:
+
+```go
+type App struct {
+    port            int
+    router          *http.ServeMux
+    userService     user.UserServiceApi
+    questionService question.QuestionServiceApi
+    hub             *ws.Hub              // WebSocket hub
+    store           *sessions.CookieStore
+    logger          *slog.Logger
+    m               *metrics.Metrics     // Prometheus metrics
+    reg             *prometheus.Registry
+}
+```
+
+#### HTTP Server
+**Location:** `web/app.go:53`
+
+Configured with:
+- **Read timeout:** 10 seconds
+- **Write timeout:** 30 seconds
+- **Idle timeout:** 1 minute
+- Graceful shutdown on SIGINT/SIGTERM
+
+### 6. WebSocket Hub
+
+**Package:** `internal/web/ws`
+**Location:** `ws/hub.go:27`
+
+Manages real-time game rooms and connections (detailed in [WebSocket System](/architecture/websocket-system)):
+- Room creation and lifecycle
+- Client connection management
+- Message broadcasting
+- Metrics tracking
+
+### 7. Middleware
+
+**Location:** `web/middleware.go`
+
+Provides cross-cutting concerns:
+
+<Accordion title="Available middleware">
+
+**Authentication** (`requireAuth:12`)
+- Session validation
+- Username extraction from session
+- Redirect to signin if unauthorized
+
+**Panic Recovery** (`recoverPanic:30`)
+- Catches panics in handlers
+- Logs errors
+- Prevents server crashes
+
+**Request Duration** (`requestDuration:45`)
+- Prometheus metrics collection
+- Tracks request timing by HTTP method
+
+</Accordion>
+
+## Request Flow
+
+### Standard HTTP Request Flow
+
+```
+1. Client HTTP Request
+   ↓
+2. Router (http.ServeMux)
+   ↓
+3. Middleware Chain
+   ├→ recoverPanic (error handling)
+   ├→ requireAuth (if protected route)
+   └→ requestDuration (metrics)
+   ↓
+4. Handler
+   ├→ Parse request/form data
+   ├→ Call service layer
+   └→ Render response
+   ↓
+5. Service Layer
+   ├→ Business logic
+   ├→ Repository calls
+   └→ External API calls
+   ↓
+6. Response (HTML/WebSocket)
+```
+
+### WebSocket Request Flow
+
+```
+1. HTTP Upgrade Request
+   ↓
+2. Handler (CreateWs/JoinWs)
+   ↓
+3. Hub.CreateRoom() or Hub.JoinRoom()
+   ↓
+4. WebSocket Upgrade
+   ↓
+5. Client Created
+   ├→ Start readMessage() goroutine
+   ├→ Start writeMessage() goroutine
+   └→ Add to room
+   ↓
+6. Real-time bidirectional communication
+```
+
+<Note>
+WebSocket connections are upgraded from HTTP requests and managed by separate goroutines for concurrent read/write operations.
+</Note>
+
+## Technology Stack
+
+### Core Technologies
+
+| Component | Technology | Purpose |
+|-----------|------------|----------|
+| **Language** | Go 1.x | Server implementation |
+| **HTTP Server** | net/http | Standard library HTTP server |
+| **Router** | http.ServeMux | Request routing |
+| **WebSocket** | gorilla/websocket | Real-time communication |
+| **Database** | MongoDB | User data persistence |
+| **Sessions** | gorilla/sessions | Cookie-based sessions |
+| **Templates** | templ | Type-safe HTML templates |
+| **Logging** | log/slog | Structured logging |
+| **Metrics** | Prometheus | Application monitoring |
+
+### External Services
+
+- **OpenTDB API** - Trivia question provider
+- **MongoDB Atlas** (optional) - Cloud database hosting
+
+### Key Design Patterns
+
+<Accordion title="Clean Architecture">
+The codebase follows clean architecture principles:
+- **Core domain** is independent of external concerns
+- **Service interfaces** enable dependency injection
+- **Repository pattern** abstracts data access
+- **Use cases** defined in service layer
+</Accordion>
+
+<Accordion title="Concurrency Patterns">
+Go concurrency is used extensively:
+- **Goroutines** for WebSocket read/write loops
+- **Channels** for game events and answer collection
+- **Mutexes** (RWMutex) for thread-safe access to shared state
+- **Select statements** for multiplexing channel operations
+</Accordion>
+
+<Accordion title="Event-Driven Architecture">
+Game events flow through channels:
+- Game emits messages to `Message` channel
+- Clients listen on egress channels
+- Answers sent via `AnswerCh` channel
+- Non-blocking event distribution
+</Accordion>
+
+## Routes Overview
+
+**Location:** `web/routes.go:15`
+
+### Public Routes
+- `GET /signin` - Sign in page
+- `POST /signin` - Authentication
+- `GET /signup` - Registration page
+- `POST /signup` - User registration
+- `GET /static/*` - Static assets
+- `GET /metrics` - Prometheus metrics
+
+### Protected Routes (require authentication)
+- `GET /home` - User dashboard
+- `GET /create` - Game creation form
+- `POST /create` - Create game
+- `GET /join/{id}` - Join game page
+- `POST /signout` - Sign out
+- `/activegames` - List active games (HTMX)
+
+### WebSocket Endpoints
+- `/wscreate` - Create game room with WebSocket
+- `/wsjoin/{id}` - Join existing room via WebSocket
+
+<Note>
+All WebSocket endpoints require authentication and upgrade HTTP connections to WebSocket protocol.
+</Note>
+
+## Deployment Considerations
+
+### Environment Variables
+```bash
+PORT=8080
+DB_URL=mongodb://localhost:27017
+LOG_LEVEL=info
+ENV=prod
+```
+
+### Graceful Shutdown
+
+The server implements graceful shutdown (`web/app.go:63`):
+- Listens for SIGINT/SIGTERM signals
+- 5-second timeout for existing connections
+- Closes database connections cleanly
+- Logs shutdown events
+
+### Monitoring
+
+Prometheus metrics exposed at `/metrics` include:
+- Active WebSocket connections
+- Request duration by method
+- Custom game metrics
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="WebSocket System" icon="arrows-rotate" href="/architecture/websocket-system">
+    Deep dive into real-time communication architecture
+  </Card>
+  <Card title="Game Engine" icon="gamepad" href="/architecture/game-engine">
+    Understand game logic and state management
+  </Card>
+</CardGroup>

@@ -1,0 +1,262 @@
+---
+title: 'Question Service'
+description: 'Question service implementation for managing trivia questions and categories'
+---
+
+## Overview
+
+The Question Service provides a clean abstraction layer over the trivia API client, implementing the service pattern for question and category management.
+
+**Package**: `internal/core/question/service.go`
+
+## QuestionServiceApi Interface
+
+Defines the contract for question service implementations.
+
+**Source**: `internal/core/question/interfaces.go`
+
+```go
+type QuestionServiceApi interface {
+    GetQuestions(amount int, category int) ([]entities.Question, error)
+    GetCategories() ([]Category, error)
+}
+```
+
+### Interface Methods
+
+<ParamField path="GetQuestions" type="method">
+  Retrieves trivia questions based on amount and category
+</ParamField>
+
+<ParamField path="GetCategories" type="method">
+  Retrieves all available trivia categories
+</ParamField>
+
+## QuestionService Implementation
+
+### Structure
+
+```go
+type QuestionService struct {
+    questionClient QuestionClientApi
+}
+```
+
+The service wraps a `QuestionClientApi` implementation (typically the TriviaClient) to provide question retrieval functionality.
+
+### Constructor
+
+```go
+func NewQuestionService(client QuestionClientApi) *QuestionService
+```
+
+<ParamField path="client" type="QuestionClientApi" required>
+  A client implementing the QuestionClientApi interface (e.g., TriviaClient)
+</ParamField>
+
+**Returns**: Initialized QuestionService instance
+
+**Example**:
+```go
+import (
+    "github.com/Lafetz/showdown-trivia-game/internal/core/question"
+    "github.com/Lafetz/showdown-trivia-game/internal/trivia_api"
+)
+
+triviaClient := triviaapi.NewTriviaClient()
+questionService := question.NewQuestionService(triviaClient)
+```
+
+## Methods
+
+### GetQuestions
+
+Retrieves trivia questions by delegating to the underlying client.
+
+```go
+func (q *QuestionService) GetQuestions(amount int, category int) ([]entities.Question, error)
+```
+
+<ParamField path="amount" type="int" required>
+  Number of questions to retrieve
+</ParamField>
+
+<ParamField path="category" type="int" required>
+  Category ID for filtering questions
+</ParamField>
+
+**Returns**: 
+- `[]entities.Question`: Array of Question entities
+- `error`: Error if retrieval fails
+
+**Example**:
+```go
+// Get 5 questions from category 21 (Sports)
+questions, err := questionService.GetQuestions(5, 21)
+if err != nil {
+    return err
+}
+
+for _, q := range questions {
+    fmt.Println(q.Question)
+    for i, opt := range q.Options {
+        fmt.Printf("%d. %s\n", i+1, opt)
+    }
+}
+```
+
+**Source**: `internal/core/question/service.go:9`
+
+### GetCategories
+
+Retrieves all available trivia categories.
+
+```go
+func (q *QuestionService) GetCategories() ([]Category, error)
+```
+
+**Returns**:
+- `[]Category`: Array of available categories
+- `error`: Error if retrieval fails
+
+**Example**:
+```go
+categories, err := questionService.GetCategories()
+if err != nil {
+    return err
+}
+
+for _, cat := range categories {
+    fmt.Printf("[%d] %s\n", cat.Id, cat.Name)
+}
+```
+
+**Source**: `internal/core/question/service.go:12`
+
+## Data Structures
+
+### Question Entity
+
+Represents a trivia question with multiple-choice options.
+
+**Source**: `internal/core/entities/question.go`
+
+```go
+type Question struct {
+    Question      string
+    Options       []string
+    CorrectAnswer string
+}
+```
+
+<ResponseField name="Question" type="string">
+  The question text to display to the user
+</ResponseField>
+
+<ResponseField name="Options" type="[]string">
+  Array of answer options (includes correct and incorrect answers, shuffled)
+</ResponseField>
+
+<ResponseField name="CorrectAnswer" type="string">
+  The correct answer (one of the options in the Options array)
+</ResponseField>
+
+**Constructor**:
+```go
+func NewQuestion(question string, options []string, correctAnswer string) Question
+```
+
+**Usage Example**:
+```go
+question := entities.NewQuestion(
+    "What is the capital of France?",
+    []string{"London", "Berlin", "Paris", "Madrid"},
+    "Paris",
+)
+```
+
+### Category
+
+Represents a trivia category.
+
+**Source**: `internal/core/question/domain.go`
+
+```go
+type Category struct {
+    Id   int
+    Name string
+}
+```
+
+<ResponseField name="Id" type="int">
+  Unique identifier for the category
+</ResponseField>
+
+<ResponseField name="Name" type="string">
+  Human-readable category name
+</ResponseField>
+
+**Example Categories**:
+- `{Id: 9, Name: "General Knowledge"}`
+- `{Id: 21, Name: "Sports"}`
+- `{Id: 23, Name: "History"}`
+
+## QuestionClientApi Interface
+
+Defines the contract for question client implementations.
+
+**Source**: `internal/core/question/interfaces.go`
+
+```go
+type QuestionClientApi interface {
+    GetQuestions(amount int, category int) ([]entities.Question, error)
+    GetCategories() ([]Category, error)
+}
+```
+
+This interface is implemented by:
+- `triviaapi.triviaClient` - Open Trivia Database client
+
+## Service Pattern Benefits
+
+1. **Abstraction**: Separates business logic from API implementation details
+2. **Testability**: Easy to mock the QuestionClientApi for unit testing
+3. **Flexibility**: Can swap different question sources without changing service consumers
+4. **Single Responsibility**: Service focuses on orchestration, client handles API communication
+
+## Usage in Application
+
+Typical initialization flow:
+
+```go
+func InitializeQuestionService() question.QuestionServiceApi {
+    // Create API client
+    triviaClient := triviaapi.NewTriviaClient()
+    
+    // Create service with client
+    questionService := question.NewQuestionService(triviaClient)
+    
+    return questionService
+}
+```
+
+Using the service in a game:
+
+```go
+func StartGame(service question.QuestionServiceApi) error {
+    // Fetch questions for the game
+    questions, err := service.GetQuestions(10, 9)
+    if err != nil {
+        return fmt.Errorf("failed to load questions: %w", err)
+    }
+    
+    // Use questions in game logic
+    for _, q := range questions {
+        // Display question and handle user input
+        answerCorrectly := AskQuestion(q)
+        // ... game logic
+    }
+    
+    return nil
+}
+```

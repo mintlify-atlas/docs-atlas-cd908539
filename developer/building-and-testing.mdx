@@ -1,0 +1,440 @@
+---
+title: 'Building and Testing'
+description: 'Build, test, and development workflow'
+---
+
+## Prerequisites
+
+- Go 1.21 or higher
+- Node.js and npm (for Tailwind CSS)
+- Docker and Docker Compose (optional, for containerized development)
+- golangci-lint (for linting)
+- Air (for hot reload during development)
+- templ (for template generation)
+
+## Quick Start
+
+### Running the Application
+
+```bash
+make run
+```
+
+This command:
+1. Loads environment variables from `.env` file
+2. Runs the application using `go run ./cmd/web/main.go`
+
+### Development with Hot Reload
+
+```bash
+make air
+```
+
+Uses [Air](https://github.com/cosmtrek/air) to automatically rebuild and restart the application when code changes are detected.
+
+**What Air watches:**
+- `.go` files
+- `.templ` files (template files)
+- `.html` files
+
+**What Air ignores:**
+- Test files (`*_test.go`)
+- Generated template files (`*_templ.go`)
+- `assets/`, `tmp/`, `vendor/`, `testdata/` directories
+
+**Air configuration** (`.air.toml`):
+- Build command: `templ generate && go build -o tmp/main ./cmd/web`
+- Watches for file changes with 0ms delay
+- Logs build errors to `build-errors.log`
+- Kills process on port 8080 after rebuild
+
+## Build Commands
+
+### Build Binary
+
+```bash
+make build
+```
+
+Compiles the application to `./bin/web` executable.
+
+**Output:** `./bin/web`
+
+### Run Built Binary
+
+```bash
+./bin/web
+```
+
+Make sure your `.env` file is configured before running.
+
+## Testing
+
+### Run All Tests
+
+```bash
+make test
+```
+
+Executes all tests in the project:
+```bash
+go test ./...
+```
+
+### Run Tests with Coverage
+
+```bash
+make coverage
+```
+
+Generates a coverage report:
+1. Runs tests with coverage profiling
+2. Outputs coverage statistics for each function
+
+**Commands executed:**
+```bash
+go test -coverprofile=coverage.out ./...
+go tool cover -func=coverage.out
+```
+
+**Output example:**
+```
+github.com/Lafetz/showdown-trivia-game/internal/core/game/game.go:15:      NewGame         100.0%
+github.com/Lafetz/showdown-trivia-game/internal/core/game/game.go:28:      Start           85.7%
+github.com/Lafetz/showdown-trivia-game/internal/core/user/service.go:12:   Register        90.0%
+total:                                                                      (statements)    82.3%
+```
+
+### View Coverage in Browser
+
+```bash
+go tool cover -html=coverage.out
+```
+
+Opens an HTML report showing line-by-line coverage.
+
+### Run Specific Tests
+
+```bash
+# Test specific package
+go test ./internal/core/game/...
+
+# Test specific function
+go test -run TestGameStart ./internal/core/game/...
+
+# Verbose output
+go test -v ./...
+
+# Run tests in parallel
+go test -parallel 4 ./...
+```
+
+## Linting
+
+### Run Linter
+
+```bash
+make lint
+```
+
+Runs golangci-lint with configuration from `golangci.toml`.
+
+**Enabled linters:**
+- **Default:** deadcode, errcheck, gosimple, govet, ineffassign, staticcheck, structcheck, typecheck, unused, varcheck
+- **Code Quality:** gocyclo, goconst, revive, unconvert, unparam
+- **Style:** goimports, misspell
+- **Best Practices:** bodyclose, nakedret, tparallel
+
+### Fix Auto-Fixable Issues
+
+```bash
+golangci-lint run --fix
+```
+
+### Lint Specific Packages
+
+```bash
+golangci-lint run ./internal/core/...
+```
+
+## Frontend Development
+
+### Watch Tailwind CSS
+
+```bash
+make tailwind
+```
+
+Watches for changes in template files and regenerates CSS:
+```bash
+tailwindcss -i ./internal/web/static/css/input.css -o ./internal/web/static/css/styles.css --watch
+```
+
+### Generate Templates
+
+```bash
+make templ
+```
+
+Watches for changes in `.templ` files and regenerates Go code:
+```bash
+templ generate --watch
+```
+
+### Recommended Development Setup
+
+Run these in separate terminal windows for full hot reload:
+
+**Terminal 1 - Application:**
+```bash
+make air
+```
+
+**Terminal 2 - Tailwind CSS:**
+```bash
+make tailwind
+```
+
+**Terminal 3 - Templates:**
+```bash
+make templ
+```
+
+## Environment Configuration
+
+### Required Environment Variables
+
+Create a `.env` file in the project root:
+
+```bash
+PORT=8080
+DB_URL=mongodb://admin:admin11@localhost:27017/trivia?authSource=admin
+LOG_LEVEL=info
+ENV=dev
+```
+
+### Loading Environment Variables
+
+The project uses `load_env.sh` to source environment variables:
+
+```bash
+# Automatically loaded by make commands
+make run
+make air
+
+# Manually load
+source ./load_env.sh
+```
+
+## Docker Development
+
+### Start All Services
+
+```bash
+docker compose up
+```
+
+Starts:
+- **App** (port 8080)
+- **MongoDB** (port 27017)
+- **Prometheus** (port 9090)
+- **Grafana** (port 3000)
+
+### Start in Detached Mode
+
+```bash
+docker compose up -d
+```
+
+### View Logs
+
+```bash
+# All services
+docker compose logs -f
+
+# Specific service
+docker compose logs -f app
+```
+
+### Stop Services
+
+```bash
+docker compose down
+```
+
+### Rebuild Containers
+
+```bash
+docker compose up --build
+```
+
+### Clean Up Volumes
+
+```bash
+docker compose down -v
+```
+
+## Debugging
+
+### Debug with Delve
+
+```bash
+# Install delve
+go install github.com/go-delve/delve/cmd/dlv@latest
+
+# Start debugger
+dlv debug ./cmd/web/main.go
+
+# Or attach to running process
+dlv attach <pid>
+```
+
+### Enable Debug Logging
+
+Set `LOG_LEVEL=debug` in your `.env` file:
+
+```bash
+LOG_LEVEL=debug
+```
+
+### Check Port Availability
+
+```bash
+# Linux/Mac
+lsof -ti:8080
+
+# Kill process on port
+kill -9 $(lsof -ti:8080)
+```
+
+## Continuous Integration
+
+### GitHub Actions Workflow
+
+The project includes CI workflows in `.github/workflows/`.
+
+**Typical workflow:**
+1. Checkout code
+2. Setup Go environment
+3. Download dependencies
+4. Run linter
+5. Run tests with coverage
+6. Build binary
+7. Upload artifacts
+
+### Running CI Checks Locally
+
+```bash
+# Full CI check simulation
+make lint && make test && make build
+```
+
+## Common Development Tasks
+
+### Add New Dependencies
+
+```bash
+# Add dependency
+go get github.com/some/package
+
+# Tidy dependencies
+go mod tidy
+
+# Vendor dependencies (optional)
+go mod vendor
+```
+
+### Update Dependencies
+
+```bash
+# Update all dependencies
+go get -u ./...
+go mod tidy
+
+# Update specific dependency
+go get -u github.com/some/package
+```
+
+### Check for Vulnerabilities
+
+```bash
+go install golang.org/x/vuln/cmd/govulncheck@latest
+govulncheck ./...
+```
+
+## Performance Profiling
+
+### CPU Profile
+
+```bash
+# Add to your code
+import _ "net/http/pprof"
+
+# Then visit
+http://localhost:8080/debug/pprof/
+
+# Analyze profile
+go tool pprof http://localhost:8080/debug/pprof/profile?seconds=30
+```
+
+### Memory Profile
+
+```bash
+go tool pprof http://localhost:8080/debug/pprof/heap
+```
+
+## Troubleshooting
+
+### Build Fails
+
+```bash
+# Clean build cache
+go clean -cache -modcache -testcache
+
+# Re-download dependencies
+go mod download
+go mod tidy
+```
+
+### Tests Fail
+
+```bash
+# Run tests with verbose output
+go test -v ./...
+
+# Run specific failing test
+go test -v -run TestName ./path/to/package
+```
+
+### Port Already in Use
+
+```bash
+# Find and kill process
+lsof -ti:8080 | xargs kill -9
+```
+
+### MongoDB Connection Issues
+
+```bash
+# Check MongoDB is running
+docker compose ps
+
+# Check MongoDB logs
+docker compose logs mongo
+
+# Verify connection string in .env
+DB_URL=mongodb://admin:admin11@localhost:27017/trivia?authSource=admin
+```
+
+## Makefile Reference
+
+| Command | Description |
+|---------|-------------|
+| `make run` | Run application with environment variables |
+| `make air` | Run with hot reload using Air |
+| `make build` | Build binary to `./bin/web` |
+| `make test` | Run all tests |
+| `make coverage` | Run tests with coverage report |
+| `make lint` | Run golangci-lint |
+| `make tailwind` | Watch and compile Tailwind CSS |
+| `make templ` | Watch and generate templates |

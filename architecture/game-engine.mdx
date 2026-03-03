@@ -1,0 +1,910 @@
+---
+title: "Game Engine Architecture"
+description: "Core game logic, state management, question flow, and scoring system for trivia games"
+---
+
+## Overview
+
+The Game Engine is the heart of Showdown Trivia, managing game state, question flow, answer collection, and scoring. It uses Go channels and goroutines to coordinate real-time gameplay across multiple players.
+
+```
+┌────────────────────────────────────────────┐
+│              Game Instance                 │
+│  ┌──────────────────────────────────┐     │
+│  │  Questions: []Question           │     │
+│  │  Players: []*Player              │     │
+│  │  CurrentQues: int                │     │
+│  │  GameStarted: bool               │     │
+│  └──────────────────────────────────┘     │
+│                                            │
+│  Channels:                                │
+│  ┌─────────────┐      ┌──────────────┐   │
+│  │  AnswerCh   │◄─────│   Clients    │   │
+│  └──────┬──────┘      └──────────────┘   │
+│         │                                 │
+│         ▼                                 │
+│  ┌─────────────┐                         │
+│  │   Scoring   │                         │
+│  └──────┬──────┘                         │
+│         │                                 │
+│         ▼                                 │
+│  ┌─────────────┐      ┌──────────────┐   │
+│  │  Message    │─────►│    Room      │   │
+│  └─────────────┘      └──────────────┘   │
+└────────────────────────────────────────────┘
+```
+
+## Core Structures
+
+### Game Structure
+
+**Location:** `internal/core/game/game.go:14`
+
+```go
+type Game struct {
+    Questions   []entities.Question  // All questions for this game
+    Players     []*Player            // All participating players
+    CurrentQues int                  // 1-indexed question number
+    AnswerCh    chan Answer          // Receives answers from clients
+    Message     chan Message         // Sends events to room
+    timerSpan   time.Duration        // Time per question
+    GameStarted bool                 // Game state flag
+    sync.RWMutex                     // Thread-safe access
+}
+```
+
+### Player Structure
+
+**Location:** `internal/core/game/domain.go:21`
+
+```go
+type Player struct {
+    Username string
+    Score    int
+}
+
+func NewPlayer(username string) *Player {
+    return &Player{
+        Username: username,
+        Score:    0,
+    }
+}
+```
+
+<Note>
+Players start with a score of 0. The score increments by 1 for each correct answer.
+</Note>
+
+### Answer Structure
+
+**Location:** `internal/core/game/domain.go:33`
+
+```go
+type Answer struct {
+    username string  // Player who answered
+    answer   string  // Their answer choice
+}
+
+func NewAnswer(username string, ans string) Answer {
+    return Answer{
+        username: username,
+        answer:   ans,
+    }
+}
+```
+
+### Message Structure
+
+**Location:** `internal/core/game/domain.go:9`
+
+```go
+type Message struct {
+    MsgType string       // "question", "info", or "game_end"
+    Payload interface{}  // Type depends on MsgType
+}
+
+const (
+    MsgGameEnd  = "game_end"   // Payload: Winners (map[string]int)
+    MsgQuestion = "question"   // Payload: entities.Question
+    MsgInfo     = "info"       // Payload: Info struct
+)
+```
+
+## Game Initialization
+
+**Location:** `game.go:96`
+
+```go
+func NewGame(questions []entities.Question, timer time.Duration) *Game {
+    return &Game{
+        Questions:   questions,
+        AnswerCh:    make(chan Answer),
+        Message:     make(chan Message),
+        timerSpan:   timer,
+        CurrentQues: 0,
+        GameStarted: false,
+    }
+}
+```
+
+### Initialization Flow
+
+```
+1. Handler receives game creation request
+   ↓
+2. Fetch questions from Question Service
+   ↓
+3. Parse timer duration (e.g., 10 seconds)
+   ↓
+4. NewGame() creates Game instance
+   ├─ Initialize channels (unbuffered)
+   ├─ Store questions
+   ├─ Set timer duration
+   └─ GameStarted = false
+   ↓
+5. Room wraps Game and listens to Message channel
+   ↓
+6. Game waits for Start() call
+```
+
+<Accordion title="Default Timer">
+**Location:** `game.go:11`
+
+```go
+const DefaultTimerSpan = 3 * time.Second
+```
+
+While defined, the actual timer is set by the game creator (typically 5-30 seconds).
+</Accordion>
+
+## Game Lifecycle
+
+### Starting the Game
+
+**Location:** `game.go:25`
+
+```go
+func (g *Game) Start(players []*Player) {
+    g.Players = players
+    g.GameStarted = true
+    
+    for _, question := range g.Questions {
+        doneCh := make(chan struct{})
+        g.CurrentQues++
+        g.AskQuestion(question, doneCh)
+    }
+}
+```
+
+<Steps>
+  <Step title="Assign Players">
+    Players list is populated from connected WebSocket clients.
+  </Step>
+  
+  <Step title="Mark Game Started">
+    Sets `GameStarted = true` to prevent new players from joining.
+  </Step>
+  
+  <Step title="Question Loop">
+    Iterates through all questions sequentially, blocking until each completes.
+  </Step>
+  
+  <Step title="Question Completion">
+    Each `AskQuestion()` blocks until timer expires or `doneCh` closes.
+  </Step>
+</Steps>
+
+<Note>
+The `Start()` method is called in a goroutine from `client.go:84` to avoid blocking the WebSocket read loop.
+</Note>
+
+### Question Flow
+
+**Location:** `game.go:55`
+
+```go
+func (g *Game) AskQuestion(question entities.Question, doneCh chan struct{}) {
+    timer := time.NewTimer(g.timerSpan)
+    
+    // Broadcast question to all clients
+    g.Message <- NewMessage(MsgQuestion, question)
+    
+    answers := make(map[string]string)
+    
+    for {
+        select {
+        case answer := <-g.AnswerCh:
+            // Collect answer from player
+            answers[answer.username] = answer.answer
+            
+        case <-timer.C:
+            // Time's up!
+            g.endOfQuestion(question, answers)
+            
+            if len(g.Questions) == g.CurrentQues {
+                // Last question - show winners
+                g.DisplayWinner()
+            }
+            
+            answers = make(map[string]string)
+            close(doneCh)
+            
+        case <-doneCh:
+            return
+            
+        default:
+            continue
+        }
+    }
+}
+```
+
+#### Flow Diagram
+
+```
+┌──────────────────┐
+│ AskQuestion()    │
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│ Start Timer      │
+│ (e.g. 10s)       │
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│ Send Question    │◄──────────┐
+│ to Message chan  │           │
+└────────┬─────────┘           │
+         │                     │
+         ▼                     │
+┌──────────────────┐           │
+│ Select Loop      │           │
+│ ┌──────────────┐ │           │
+│ │ AnswerCh     │ │ Collect   │
+│ │ Timer.C      │ │ Answers   │
+│ │ doneCh       │ │           │
+│ └──────────────┘ │           │
+└────────┬─────────┘           │
+         │                     │
+         ▼                     │
+┌──────────────────┐           │
+│ Timer Expires    │           │
+└────────┬─────────┘           │
+         │                     │
+         ▼                     │
+┌──────────────────┐           │
+│ Score Answers    │           │
+└────────┬─────────┘           │
+         │                     │
+         ▼                     │
+    ┌────┴────┐               │
+    │ Last Q? │               │
+    └────┬────┘               │
+         │                     │
+    Yes  │  No                │
+         │  │                 │
+         │  └─────────────────┘
+         │
+         ▼
+┌──────────────────┐
+│ DisplayWinner()  │
+└──────────────────┘
+```
+
+### Answer Collection
+
+Answers are received from the `AnswerCh` channel:
+
+```go
+case answer := <-g.AnswerCh:
+    answers[answer.username] = answer.answer
+```
+
+<Accordion title="Answer Deduplication">
+The map structure ensures each player can only submit one answer per question:
+
+```go
+answers := make(map[string]string)
+// Key = username, Value = answer
+```
+
+If a player sends multiple answers, only the **last** one is kept. This allows players to change their answer before time expires.
+</Accordion>
+
+<Accordion title="Channel Source">
+Answers are sent from WebSocket clients:
+
+**Location:** `ws/client.go:86`
+
+```go
+case SendAnswer:
+    answer := game.NewAnswer(c.Username, req.Payload)
+    c.room.Game.AnswerCh <- answer
+```
+
+This is an unbuffered channel, so sends block until the game's select loop receives them.
+</Accordion>
+
+### Scoring Logic
+
+**Location:** `game.go:37`
+
+```go
+func (g *Game) endOfQuestion(question entities.Question, answers map[string]string) {
+    for username, answer := range answers {
+        if question.CorrectAnswer == answer {
+            g.score(username)
+        }
+    }
+}
+
+func (g *Game) score(username string) {
+    for _, player := range g.Players {
+        if player.Username == username {
+            player.Score++
+        }
+    }
+}
+```
+
+<Steps>
+  <Step title="Timer Expires">
+    No more answers accepted for this question.
+  </Step>
+  
+  <Step title="Iterate Collected Answers">
+    Compare each player's answer to the correct answer.
+  </Step>
+  
+  <Step title="Award Points">
+    Increment score by 1 for each correct answer.
+  </Step>
+  
+  <Step title="No Penalty">
+    Wrong answers or no answer result in no point change.
+  </Step>
+</Steps>
+
+<Note>
+Scoring is simple: correct = +1 point, incorrect = 0 points. There is no time bonus or penalty system.
+</Note>
+
+### Ending the Game
+
+**Location:** `game.go:86`
+
+```go
+func (g *Game) DisplayWinner() {
+    winners := make(Winners)  // Winners = map[string]int
+    
+    for _, player := range g.Players {
+        winners[player.Username] = player.Score
+    }
+    
+    g.Message <- NewMessage(MsgGameEnd, winners)
+    close(g.Message)  // Signal end of messages
+}
+```
+
+#### Winners Format
+
+```go
+type Winners map[string]int
+// Example:
+// {
+//   "alice": 8,
+//   "bob": 6,
+//   "charlie": 7
+// }
+```
+
+The client-side rendering determines the actual winner by sorting scores.
+
+<Accordion title="Room Cleanup After Game">
+**Location:** `ws/rooms.go:64`
+
+When `MsgGameEnd` is received by the room:
+
+```go
+case game.MsgGameEnd:
+    if payload, ok := m.Payload.(game.Winners); ok {
+        buff, err := render.GameEnd(payload)
+        r.sendMsg(buff.Bytes())
+        r.hub.removeRoom(r)  // Remove room from hub
+    }
+```
+
+The room is automatically cleaned up, and the closed `Message` channel terminates the room's event listener goroutine.
+</Accordion>
+
+## Player Management
+
+### Adding Players
+
+Players are collected when the game starts:
+
+**Location:** `ws/client.go:78`
+
+```go
+case StartGame:
+    var players []*game.Player
+    for c := range c.room.clients {
+        players = append(players, game.NewPlayer(c.Username))
+    }
+    go c.room.Game.Start(players)
+```
+
+<Note>
+The player list is a snapshot taken at game start. Players who disconnect during the game remain in the `Players` slice but stop receiving questions.
+</Note>
+
+### Player State During Game
+
+Each player maintains:
+- **Username:** Immutable identifier
+- **Score:** Updated after each question
+- **Connection:** Managed separately by Client/Room (not in Player struct)
+
+### Handling Disconnections
+
+If a player disconnects mid-game:
+1. Their WebSocket client is removed from the room
+2. Their Player object remains in `game.Players`
+3. They stop receiving questions
+4. They cannot submit answers
+5. Their score remains unchanged
+6. They appear in final results with their last score
+
+<Warning>
+There is no reconnection mechanism. Once a player disconnects, they cannot rejoin the same game instance.
+</Warning>
+
+## Question Entity
+
+**Location:** `internal/core/entities/question.go`
+
+```go
+type Question struct {
+    Question      string   // The question text
+    Options       []string // 4 answer choices (shuffled)
+    CorrectAnswer string   // The correct answer
+}
+```
+
+### Question Sources
+
+Questions come from the Trivia API client:
+
+**Location:** `internal/trivia_api/trivia_api.go:18`
+
+```go
+func (t *triviaClient) GetQuestions(amount int, category int) ([]entities.Question, error) {
+    apiURL := fmt.Sprintf("%s/api.php?amount=%d&type=multiple&category=%d", 
+        t.baseURL, amount, category)
+    questions, err := fetchQuestions(apiURL)
+    // ... convert and shuffle options ...
+    return questionsDomain, nil
+}
+```
+
+<Accordion title="Option Shuffling">
+**Location:** `trivia_api.go:90`
+
+```go
+func shuffleOptions(options []string) {
+    r := rand.New(rand.NewSource(time.Now().UnixNano()))
+    n := len(options)
+    for i := n - 1; i > 0; i-- {
+        j := r.Intn(i + 1)
+        options[i], options[j] = options[j], options[i]
+    }
+}
+```
+
+Options are shuffled so the correct answer isn't always in the same position.
+</Accordion>
+
+## Timing and Concurrency
+
+### Timer Mechanism
+
+**Location:** `game.go:57`
+
+```go
+timer := time.NewTimer(g.timerSpan)
+```
+
+Each question gets its own timer:
+- Created when question is asked
+- Fires once after `timerSpan` duration
+- Triggers scoring and progression
+
+<Note>
+The timer is **not** paused or extended. Once it starts, answers must be submitted before it expires.
+</Note>
+
+### Channel Communication
+
+#### Unbuffered Channels
+
+All game channels are unbuffered:
+
+```go
+AnswerCh:    make(chan Answer)   // Blocks until received
+Message:     make(chan Message)  // Blocks until received
+```
+
+**Implications:**
+- Answers block client write until game receives them
+- Messages block game until room receives them
+- Provides natural backpressure
+- Ensures synchronous event processing
+
+#### Channel Flow Diagram
+
+```
+WebSocket Client          Game Engine           Room/Clients
+     │                         │                      │
+     │  SendAnswer Event       │                      │
+     ├────────────────────────►│                      │
+     │                         │                      │
+     │  (blocks until read)    │                      │
+     │                         │                      │
+     │                    [Select Loop]              │
+     │                    Receives Answer             │
+     │                         │                      │
+     │                    [Timer Expires]            │
+     │                         │                      │
+     │                    Score Answers               │
+     │                         │                      │
+     │                    Next Question               │
+     │                         │                      │
+     │                         │  MsgQuestion         │
+     │                         ├─────────────────────►│
+     │                         │                      │
+     │                         │  (blocks until read) │
+     │                         │                      │
+     │                         │                 Broadcast
+     │◄────────────────────────┼──────────────────────┤
+     │  Question HTML          │                      │
+```
+
+### Goroutine Coordination
+
+<AccordionGroup>
+  <Accordion title="Game Start Goroutine">
+  **Location:** `ws/client.go:84`
+  
+  ```go
+  go c.room.Game.Start(players)
+  ```
+  
+  Game logic runs in a separate goroutine to avoid blocking the WebSocket read loop. This allows clients to continue sending messages while the game progresses.
+  </Accordion>
+
+  <Accordion title="Room Event Listener">
+  **Location:** `ws/rooms.go:41`
+  
+  ```go
+  go func() {
+      for m := range r.Game.Message {
+          // Handle game messages
+      }
+  }()
+  ```
+  
+  Each room has a dedicated goroutine listening for game events and broadcasting them to clients.
+  </Accordion>
+
+  <Accordion title="Client Read/Write Loops">
+  **Location:** `ws/client.go:46,100`
+  
+  ```go
+  go client.readMessage()   // Receives events from browser
+  go client.writeMessage()  // Sends messages to browser
+  ```
+  
+  Each client has two goroutines for bidirectional WebSocket communication.
+  </Accordion>
+</AccordionGroup>
+
+### Race Condition Prevention
+
+1. **RWMutex on Game:** Protects concurrent access to game state
+2. **Channel-based messaging:** No shared memory for events
+3. **Select statement:** Atomic channel operations
+4. **Immutable questions:** Question slice never modified during game
+5. **Player score updates:** Only modified by game goroutine
+
+## Message Broadcasting
+
+### From Game to Clients
+
+```
+Game.Message chan
+      │
+      ▼
+Room Event Listener
+      │
+      ├─ Render message to HTML
+      │
+      ▼
+Room.sendMsg()
+      │
+      ├───────┬───────┬───────┐
+      ▼       ▼       ▼       ▼
+  Client1 Client2 Client3 Client4
+  egress  egress  egress  egress
+      │       │       │       │
+      ▼       ▼       ▼       ▼
+  Write   Write   Write   Write
+  Loop    Loop    Loop    Loop
+      │       │       │       │
+      ▼       ▼       ▼       ▼
+  Browser Browser Browser Browser
+```
+
+### Message Rendering
+
+**Location:** `ws/rooms.go:43`
+
+Different message types are rendered differently:
+
+<Accordion title="Question Rendering">
+```go
+case game.MsgQuestion:
+    if payload, ok := m.Payload.(entities.Question); ok {
+        buff, err := render.RenderQuestion(
+            payload, 
+            r.Game.CurrentQues, 
+            len(r.Game.Questions), 
+            timer, 
+            r.Game.Players,
+        )
+        r.sendMsg(buff.Bytes())
+    }
+```
+
+Includes:
+- Question text and options
+- Current question number (e.g., "3 of 10")
+- Timer duration
+- Current player scores
+</Accordion>
+
+<Accordion title="Info Message Rendering">
+```go
+case game.MsgInfo:
+    if payload, ok := m.Payload.(game.Info); ok {
+        buff, err := render.RenderGameMessage(payload)
+        r.sendMsg(buff.Bytes())
+    }
+```
+
+Used for announcements like "Get ready!" or "Final question!"
+</Accordion>
+
+<Accordion title="Game End Rendering">
+```go
+case game.MsgGameEnd:
+    if payload, ok := m.Payload.(game.Winners); ok {
+        buff, err := render.GameEnd(payload)
+        r.sendMsg(buff.Bytes())
+        r.hub.removeRoom(r)  // Clean up
+    }
+```
+
+Displays final scores and winner(s).
+</Accordion>
+
+## Error Handling
+
+### Game-Level Errors
+
+The game engine itself has minimal error handling:
+- Questions assumed to be valid
+- Players assumed to exist
+- Timers always fire
+- Channels never close unexpectedly
+
+<Note>
+Error handling is primarily done at the boundary layers (HTTP handlers, WebSocket clients, API calls), not within core game logic.
+</Note>
+
+### Validation Points
+
+1. **Before game creation:** Questions validated by Question Service
+2. **Before game start:** Players validated by WebSocket authentication
+3. **During answer submission:** Answer format validated by client read loop
+4. **After game end:** No validation needed (message channel closed)
+
+## Testing Considerations
+
+**Location:** `internal/core/game/game_test.go`
+
+The game logic is unit tested by:
+- Mocking question data
+- Creating test players
+- Simulating answer submissions
+- Verifying scoring logic
+- Testing timer behavior
+
+<Accordion title="Example Test Structure">
+```go
+func TestGameScoring(t *testing.T) {
+    questions := []entities.Question{ /* ... */ }
+    game := NewGame(questions, 5*time.Second)
+    
+    players := []*Player{
+        NewPlayer("alice"),
+        NewPlayer("bob"),
+    }
+    
+    // Simulate game in goroutine
+    go game.Start(players)
+    
+    // Send answers
+    game.AnswerCh <- NewAnswer("alice", "correct")
+    game.AnswerCh <- NewAnswer("bob", "wrong")
+    
+    // Verify scores
+    // ...
+}
+```
+</Accordion>
+
+## Performance Characteristics
+
+### Time Complexity
+
+- **Starting game:** O(n) where n = number of questions
+- **Collecting answers:** O(m) where m = number of players
+- **Scoring:** O(m) per question
+- **Overall game:** O(n × m)
+
+### Space Complexity
+
+- **Questions:** O(n)
+- **Players:** O(m)
+- **Answers per question:** O(m)
+- **Total:** O(n + m)
+
+### Concurrency
+
+- **Goroutines per game:** 1 (main game loop) + 1 (room event listener)
+- **Goroutines per client:** 2 (read + write loops)
+- **Total for 4-player game:** 1 + 1 + (4 × 2) = 10 goroutines
+
+<Note>
+Goroutines are lightweight, so even with 100 concurrent games, the overhead is minimal.
+</Note>
+
+## Design Patterns
+
+### Event-Driven Architecture
+
+The game emits events rather than calling methods:
+- Decouples game logic from presentation
+- Allows multiple listeners
+- Enables easy testing and monitoring
+
+### Channel-Based State Machine
+
+The select loop in `AskQuestion()` is a state machine:
+- **Collecting:** Waiting for answers or timer
+- **Scoring:** Timer expired, score answers
+- **Progressing:** Move to next question or end game
+
+### Fire-and-Forget Messaging
+
+Once a message is sent to `Message` channel:
+- Game doesn't wait for acknowledgment
+- Game doesn't know which clients received it
+- Responsibility transfers to Room layer
+
+## Integration Points
+
+<CardGroup cols={2}>
+  <Card title="Question Service" icon="circle-question">
+    **Package:** `internal/core/question`
+    
+    Provides questions for game initialization. Game doesn't fetch questions itself.
+  </Card>
+  
+  <Card title="WebSocket Room" icon="users">
+    **Package:** `internal/web/ws`
+    
+    Listens to `Message` channel and broadcasts to clients. Game doesn't know about WebSockets.
+  </Card>
+  
+  <Card title="Render Package" icon="code">
+    **Package:** `internal/web/Render`
+    
+    Converts game entities to HTML. Game produces data, render creates presentation.
+  </Card>
+  
+  <Card title="Metrics" icon="chart-line">
+    **Package:** `internal/web/metrics`
+    
+    Tracks game-related metrics. Game is instrumented but doesn't collect metrics itself.
+  </Card>
+</CardGroup>
+
+## Extension Points
+
+### Adding New Message Types
+
+1. Define constant in `domain.go`
+2. Create payload struct
+3. Emit message in game logic
+4. Handle in room event listener
+5. Create renderer in Render package
+
+### Implementing Power-Ups
+
+```go
+type PowerUp struct {
+    Type     string  // "double_points", "skip", "hint"
+    Username string
+}
+
+// In game struct:
+PowerUpCh chan PowerUp
+
+// In select loop:
+case powerup := <-g.PowerUpCh:
+    g.applyPowerUp(powerup)
+```
+
+### Adding Bonus Points
+
+```go
+func (g *Game) scoreWithBonus(username string, timeRemaining time.Duration) {
+    basePoints := 1
+    bonus := int(timeRemaining.Seconds()) / 2  // 1 point per 2 seconds
+    for _, player := range g.Players {
+        if player.Username == username {
+            player.Score += (basePoints + bonus)
+        }
+    }
+}
+```
+
+### Implementing Categories/Difficulty
+
+Questions already have category from Trivia API:
+
+```go
+type Question struct {
+    Question      string
+    Options       []string
+    CorrectAnswer string
+    Category      string    // Add this
+    Difficulty    string    // Add this
+}
+```
+
+Points could scale by difficulty:
+```go
+func (g *Game) scoreByDifficulty(username string, difficulty string) {
+    points := map[string]int{
+        "easy":   1,
+        "medium": 2,
+        "hard":   3,
+    }[difficulty]
+    // ...
+}
+```
+
+## Related Documentation
+
+<CardGroup cols={2}>
+  <Card title="WebSocket System" icon="arrows-rotate" href="/architecture/websocket-system">
+    Learn how game messages reach clients via WebSocket
+  </Card>
+  <Card title="System Overview" icon="diagram-project" href="/architecture/overview">
+    See how game engine fits into overall architecture
+  </Card>
+</CardGroup>

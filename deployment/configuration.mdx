@@ -1,0 +1,403 @@
+---
+title: Configuration
+description: Environment variables and configuration options for Showdown Trivia
+---
+
+## Overview
+
+Showdown Trivia is configured through environment variables defined in a `.env` file or set in your deployment environment. The application validates all required configuration at startup and will fail with specific error messages if any required values are missing or invalid.
+
+## Required Environment Variables
+
+All of the following environment variables must be set for the application to start:
+
+### DB_URL
+
+**Type**: String  
+**Required**: Yes
+
+**Description**: MongoDB connection string including authentication credentials and database name.
+
+**Format**:
+```
+mongodb://[username]:[password]@[host]:[port]/[database]?authSource=[authDB]
+```
+
+**Examples**:
+
+<CodeGroup>
+```bash Local development
+DB_URL=mongodb://localhost:27017/trivia
+```
+
+```bash With authentication
+DB_URL=mongodb://admin:password@localhost:27017/trivia?authSource=admin
+```
+
+```bash Docker Compose
+DB_URL=mongodb://admin:admin11@mongo/trivia?authSource=admin
+```
+
+```bash MongoDB Atlas
+DB_URL=mongodb+srv://user:pass@cluster.mongodb.net/trivia?retryWrites=true&w=majority
+```
+</CodeGroup>
+
+<Warning>
+  The application will exit with error `ErrInvalidDbUrl` if this variable is empty or not set.
+</Warning>
+
+### PORT
+
+**Type**: Integer  
+**Required**: Yes  
+**Default**: None (must be explicitly set)
+
+**Description**: The port number on which the web server will listen for HTTP requests.
+
+**Examples**:
+```bash
+PORT=8080
+```
+
+<Note>
+  The application will exit with error `ErrInvalidPort` if this value is not a valid integer.
+</Note>
+
+**Common values**:
+- `8080` - Standard alternative HTTP port (default in Docker)
+- `3000` - Common development port
+- `80` - Standard HTTP port (requires root/admin privileges)
+
+### LOG_LEVEL
+
+**Type**: String (enum)  
+**Required**: Yes
+
+**Description**: Controls the verbosity of application logging. Determines which log messages are output based on their severity level.
+
+**Valid values**:
+- `debug` - Most verbose; includes all log levels
+- `info` - Informational messages and above
+- `warn` - Warnings and errors only
+- `error` - Error messages only
+
+**Examples**:
+
+<CodeGroup>
+```bash Development
+LOG_LEVEL=debug
+```
+
+```bash Production
+LOG_LEVEL=info
+```
+
+```bash Minimal logging
+LOG_LEVEL=error
+```
+</CodeGroup>
+
+**Behavior by environment**:
+- **Development** (`ENV=dev`): Uses text format with source file locations, forces `debug` level
+- **Production** (`ENV=prod`): Uses JSON format with source locations, respects the configured level
+
+<Warning>
+  The application will exit with error `ErrInvalidLevel` if the value is not one of: debug, info, warn, error.
+</Warning>
+
+### ENV
+
+**Type**: String (enum)  
+**Required**: Yes
+
+**Description**: Specifies the runtime environment, which affects logging format and behavior.
+
+**Valid values**:
+- `dev` - Development mode
+- `prod` - Production mode
+
+**Examples**:
+```bash
+ENV=dev
+```
+
+**Effects**:
+
+| Aspect | dev | prod |
+|--------|-----|------|
+| Log Format | Text (human-readable) | JSON (machine-parseable) |
+| Log Level Override | Always debug | Uses LOG_LEVEL setting |
+| Source Info | Included | Included |
+
+<Warning>
+  The application will exit with error `ErrInvliadEnv` if the value is not `dev` or `prod`.
+</Warning>
+
+## Complete Configuration Examples
+
+### Development (.env)
+
+```bash
+DB_URL=mongodb://localhost:27017/trivia
+PORT=8080
+LOG_LEVEL=debug
+ENV=dev
+```
+
+### Production (.env)
+
+```bash
+DB_URL=mongodb://admin:SecurePassword123@mongo-prod:27017/trivia?authSource=admin
+PORT=8080
+LOG_LEVEL=info
+ENV=prod
+```
+
+### Docker Compose (compose.yaml)
+
+```yaml
+environment:
+  - PORT=8080
+  - DB_URL=mongodb://admin:admin11@mongo/trivia?authSource=admin
+  - LOG_LEVEL=info
+  - ENV=dev
+```
+
+## Configuration Loading
+
+The application loads configuration in the following order:
+
+<Steps>
+  <Step title="Environment variables read">
+    The application reads all four required environment variables using `os.Getenv()`.
+  </Step>
+
+  <Step title="Validation">
+    Each variable is validated:
+    - `ENV`: Must be "dev" or "prod"
+    - `DB_URL`: Must not be empty
+    - `LOG_LEVEL`: Must be one of the valid log levels
+    - `PORT`: Must be a valid integer
+  </Step>
+
+  <Step title="Configuration object created">
+    If all validations pass, a `Config` struct is created with the parsed values.
+  </Step>
+
+  <Step title="Logger initialized">
+    The logger is created based on the `LOG_LEVEL` and `ENV` settings.
+  </Step>
+</Steps>
+
+## Loading Environment Files
+
+### With Makefile
+
+The Makefile automatically loads variables from `.env` using the `load_env.sh` script:
+
+```bash
+make run
+make air
+```
+
+### Manually
+
+Source the environment file before running:
+
+```bash
+source load_env.sh
+go run ./cmd/web/main.go
+```
+
+### With Docker
+
+Docker Compose automatically reads environment variables from the `compose.yaml` file.
+
+## Validation Errors
+
+The application performs strict validation and will exit with specific errors:
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| `ErrInvalidDbUrl` | DB_URL is empty | Set valid MongoDB connection string |
+| `ErrInvalidPort` | PORT is not a number | Set PORT to a valid integer |
+| `ErrLogLevel` | LOG_LEVEL is empty | Set LOG_LEVEL to one of the valid values |
+| `ErrInvalidLevel` | LOG_LEVEL value is invalid | Use: debug, info, warn, or error |
+| `ErrInvliadEnv` | ENV is missing or invalid | Set ENV to "dev" or "prod" |
+
+## Configuration in Code
+
+The configuration is managed by the `config` package located in:
+```
+internal/config/config.go
+```
+
+**Config struct**:
+```go
+type Config struct {
+    Port     int
+    DbUrl    string
+    LogLevel string
+    Env      string
+}
+```
+
+**Usage**:
+```go
+config, err := config.NewConfig()
+if err != nil {
+    // Application will exit if configuration is invalid
+    log.Fatal(err)
+}
+
+// Access configuration values
+port := config.Port
+dbUrl := config.DbUrl
+```
+
+## MongoDB Configuration Details
+
+### Connection String Parameters
+
+The MongoDB connection string supports various parameters:
+
+```
+mongodb://user:pass@host:port/database?param1=value1&param2=value2
+```
+
+**Common parameters**:
+- `authSource` - Database for authentication (usually "admin")
+- `retryWrites=true` - Enable retryable writes
+- `w=majority` - Write concern level
+- `maxPoolSize` - Maximum connection pool size
+- `minPoolSize` - Minimum connection pool size
+
+### Docker Compose MongoDB Settings
+
+When using the provided `compose.yaml`, MongoDB is configured with:
+
+```yaml
+MONGO_INITDB_DATABASE=trivia
+MONGO_INITDB_ROOT_USERNAME=admin
+MONGO_INITDB_ROOT_PASSWORD=admin11
+```
+
+Matching connection string:
+```
+mongodb://admin:admin11@mongo/trivia?authSource=admin
+```
+
+<Note>
+  The hostname `mongo` refers to the Docker Compose service name and is resolved by Docker's internal DNS.
+</Note>
+
+## Security Best Practices
+
+<Warning>
+  Never commit `.env` files containing production credentials to version control. Add `.env` to your `.gitignore` file.
+</Warning>
+
+### Recommendations
+
+1. **Use strong passwords** for MongoDB authentication
+2. **Rotate credentials** regularly in production
+3. **Use secrets management** systems (e.g., HashiCorp Vault, AWS Secrets Manager)
+4. **Set ENV=prod** in production to use JSON logging
+5. **Use LOG_LEVEL=info or warn** in production to reduce log volume
+6. **Restrict PORT** access with firewalls and security groups
+7. **Enable MongoDB authentication** even in development
+8. **Use connection pooling** parameters for production MongoDB connections
+
+## Environment-Specific Tips
+
+### Development
+
+```bash
+DB_URL=mongodb://localhost:27017/trivia
+PORT=8080
+LOG_LEVEL=debug
+ENV=dev
+```
+
+- Use `debug` level for detailed logging
+- Point to local MongoDB instance
+- Use text-formatted logs for easier reading
+
+### Staging
+
+```bash
+DB_URL=mongodb://user:pass@staging-db:27017/trivia?authSource=admin
+PORT=8080
+LOG_LEVEL=info
+ENV=prod
+```
+
+- Use `info` level to see important events
+- Use production-like settings
+- Test with JSON logs
+
+### Production
+
+```bash
+DB_URL=mongodb+srv://user:SecurePass@cluster.mongodb.net/trivia?retryWrites=true&w=majority
+PORT=8080
+LOG_LEVEL=warn
+ENV=prod
+```
+
+- Use `warn` or `error` to minimize log volume
+- Use managed MongoDB service (Atlas, etc.)
+- Enable retryable writes and appropriate write concern
+- Use JSON logs for log aggregation tools
+
+## Troubleshooting
+
+### Application won't start
+
+1. Check all four required variables are set:
+   ```bash
+   echo $DB_URL $PORT $LOG_LEVEL $ENV
+   ```
+
+2. Verify `.env` file exists and is being loaded
+
+3. Check for validation error messages in the output
+
+### Environment variables not loading
+
+1. Ensure `load_env.sh` has correct permissions:
+   ```bash
+   chmod +x load_env.sh
+   ```
+
+2. Source the file manually:
+   ```bash
+   source load_env.sh
+   ```
+
+3. Verify `.env` file format (no quotes around values needed)
+
+### MongoDB connection fails
+
+1. Verify MongoDB is running:
+   ```bash
+   mongosh $DB_URL
+   ```
+
+2. Check authentication credentials
+
+3. Ensure the database specified in the URL exists
+
+4. Verify network connectivity to the MongoDB host
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Local Setup" icon="laptop-code" href="/deployment/local-setup">
+    Set up your local development environment
+  </Card>
+  <Card title="Docker Deployment" icon="docker" href="/deployment/docker">
+    Deploy with Docker Compose
+  </Card>
+</CardGroup>

@@ -1,0 +1,354 @@
+---
+title: 'Game Rooms'
+description: 'Create and join multiplayer game rooms with customizable trivia settings'
+icon: 'users'
+---
+
+## Overview
+
+Game rooms are isolated multiplayer sessions where players compete in trivia games. Each room has a unique ID, configurable settings, and supports multiple concurrent players.
+
+## Room Architecture
+
+### Hub and Room System
+
+Showdown Trivia uses a Hub-and-Spoke architecture:
+
+- **Hub** - Central registry managing all active rooms
+- **Rooms** - Individual game sessions with their own player lists
+- **Clients** - WebSocket connections representing individual players
+
+<Info>
+The Hub maintains a thread-safe map of all active rooms using `sync.RWMutex` for concurrent access.
+
+**Implementation**: `internal/web/ws/hub.go:27-32`
+</Info>
+
+### Room Structure
+
+Each room contains:
+
+```go
+type Room struct {
+    Id      string           // 7-character UUID
+    owner   string           // Username of room creator
+    clients ClientList       // Connected players
+    Game    game.Game        // Game state and logic
+    hub     *Hub            // Reference to parent hub
+}
+```
+
+**Definition**: `internal/web/ws/rooms.go:12-20`
+
+## Creating a Room
+
+### Room Creation Flow
+
+Players can create a new game room with custom settings:
+
+<Steps>
+  <Step title="Access create form">
+    Navigate to `GET /create` to see game configuration options
+  </Step>
+  <Step title="Configure game settings">
+    Select category, timer duration, and number of questions
+  </Step>
+  <Step title="Submit form">
+    POST to `/create` - server validates settings
+  </Step>
+  <Step title="WebSocket connection">
+    Client connects to `/wscreate` with configuration parameters
+  </Step>
+  <Step title="Room initialized">
+    Server generates room ID and creates game instance
+  </Step>
+  <Step title="Wait for players">
+    Room listed in active games, waiting for others to join
+  </Step>
+</Steps>
+
+**Handler code**: `internal/web/handlers/game.go:44-91`, `internal/web/handlers/game.go:113-142`
+
+### Configuration Options
+
+Room creators can customize:
+
+<AccordionGroup>
+  <Accordion title="Question Category">
+    Select from available trivia categories.
+    
+    **Validation**: Must be between 0-32
+    
+    **Parameter**: `category` (integer)
+    
+    **Form validation**: `internal/web/form/game.go:29-31`
+  </Accordion>
+  
+  <Accordion title="Timer Duration">
+    How long players have to answer each question.
+    
+    **Range**: 2-20 seconds  
+    **Parameter**: `timer` (integer)
+    
+    **Form validation**: `internal/web/form/game.go:35-37`
+  </Accordion>
+  
+  <Accordion title="Number of Questions">
+    Total questions in the game.
+    
+    **Range**: 1-50 questions
+    **Parameter**: `amount` (integer)
+    
+    **Form validation**: `internal/web/form/game.go:32-34`
+  </Accordion>
+</AccordionGroup>
+
+### Room ID Generation
+
+When a room is created:
+
+```go
+id := uuid.New().String()[:7]
+```
+
+This generates a 7-character unique identifier from a UUID. Players use this ID to join the room.
+
+**ID generation**: `internal/web/ws/ws_upgrader.go:18`
+
+### Questions Fetched
+
+The system fetches trivia questions when creating a room:
+
+1. Questions retrieved from external trivia API
+2. Number of questions based on `amount` parameter
+3. Category filter applied if specified
+4. Questions stored in room's Game instance
+
+**Question service**: `internal/web/handlers/game.go:135-139`
+
+## Joining a Room
+
+### Join Flow
+
+Players join existing rooms through:
+
+<Steps>
+  <Step title="Browse active games">
+    View list at `/activegames` showing all open rooms
+  </Step>
+  <Step title="Select a room">
+    Click to join, navigate to `/join/{room-id}`
+  </Step>
+  <Step title="WebSocket connection">
+    Client connects to `/wsjoin/{room-id}`
+  </Step>
+  <Step title="Room validation">
+    Server verifies room exists and game hasn't started
+  </Step>
+  <Step title="Player added">
+    Client added to room's player list
+  </Step>
+  <Step title="Broadcast update">
+    All players notified of new participant
+  </Step>
+</Steps>
+
+**Join handlers**: `internal/web/handlers/game.go:102-112`, `internal/web/handlers/game.go:143-153`
+
+### Join Validation
+
+<Warning>
+Players cannot join a room if:
+- Room ID doesn't exist (404 error)
+- Game has already started
+- Room has been deleted
+</Warning>
+
+**Room lookup**: `internal/web/ws/hub.go:34-40`
+
+## Active Games List
+
+Players can view all joinable rooms:
+
+**Endpoint**: `GET /activegames`
+
+The list shows:
+- Room ID
+- Room owner's username  
+- Current player list
+- Number of players
+
+<Note>
+Only rooms where the game hasn't started appear in the active games list.
+
+**Filtering logic**: `internal/web/ws/hub.go:51-53`
+</Note>
+
+**List implementation**: `internal/web/ws/hub.go:46-61`
+
+## Room Lifecycle
+
+### Room States
+
+1. **Created** - Room initialized, waiting for players
+2. **Populated** - Players joining, game not started
+3. **Active** - Game in progress (not listed in active games)
+4. **Completed** - Game ended, room about to be removed
+5. **Removed** - Room deleted from hub
+
+### Starting the Game
+
+Only the room **owner** can start the game:
+
+```json
+{
+  "type": "start_game"
+}
+```
+
+When started:
+1. Players converted to Game Player instances
+2. Game state set to `GameStarted = true`
+3. Room removed from active games list
+4. First question sent to all players
+
+**Start logic**: `internal/web/ws/client.go:78-84`, `internal/core/game/game.go:25-35`
+
+### Room Cleanup
+
+Rooms are automatically removed when:
+
+- **All players disconnect** - Last player leaving triggers cleanup
+- **Game ends** - After winner announcement, room deleted
+- **Owner disconnects before start** - Room becomes empty and removed
+
+**Cleanup logic**: `internal/web/ws/rooms.go:92-110`, `internal/web/ws/rooms.go:71`
+
+<Info>
+Room cleanup uses mutex locks to prevent race conditions during concurrent player disconnections.
+</Info>
+
+## Player Management
+
+### Adding Players
+
+When a player joins:
+
+```go
+func (r *Room) addClient(client *Client) {
+    r.clients[client] = true
+    // Broadcast updated player list to all
+}
+```
+
+1. Client added to room's client map
+2. WebSocket connection counter incremented (metrics)
+3. Updated player list broadcast to everyone
+
+**Add implementation**: `internal/web/ws/rooms.go:81-91`
+
+### Removing Players
+
+When a player disconnects:
+
+1. WebSocket connection closed
+2. Client removed from room's client map
+3. Connection counter decremented
+4. Room deleted if no players remain
+
+**Remove implementation**: `internal/web/ws/rooms.go:92-111`
+
+### Player List Display
+
+The room maintains a live list of connected players:
+
+```go
+func (r *Room) getUsers() []string {
+    // Returns array of usernames
+}
+```
+
+**Player list**: `internal/web/ws/rooms.go:112-118`
+
+## Concurrent Room Management
+
+The Hub supports multiple simultaneous rooms:
+
+<AccordionGroup>
+  <Accordion title="Thread-safe operations">
+    All room operations use mutex locks:
+    
+    - `addRoom()` - Lock during addition
+    - `removeRoom()` - Lock during deletion  
+    - `ListRooms()` - Read lock for listing
+    - `getRoom()` - Read lock for lookup
+    
+    **Implementation**: `internal/web/ws/hub.go:27-32`
+  </Accordion>
+  
+  <Accordion title="Isolated game state">
+    Each room maintains independent:
+    - Player lists
+    - Game progress  
+    - Question sets
+    - Score tracking
+    
+    Rooms cannot interfere with each other.
+  </Accordion>
+  
+  <Accordion title="Scalable architecture">
+    The system can handle:
+    - Unlimited concurrent rooms (memory-limited)
+    - Multiple players per room
+    - Independent game timers
+    - Parallel message broadcasting
+  </Accordion>
+</AccordionGroup>
+
+## Room Ownership
+
+The room creator has special privileges:
+
+✅ **Can start the game** when ready  
+✅ **Listed as owner** in active games  
+❌ **Cannot** change settings after creation  
+❌ **Cannot** remove players  
+
+Ownership stored as username string:
+
+```go
+owner string // Username of room creator
+```
+
+**Owner tracking**: `internal/web/ws/rooms.go:18`
+
+## Game Configuration Entity
+
+Settings passed to the room:
+
+```go
+type GameConfig struct {
+    Host     string  // Server host
+    Owner    bool    // Is current user the owner?
+    Id       string  // Room ID (empty for new rooms)
+    Category int     // Question category
+    Timer    int     // Seconds per question
+    Amount   int     // Number of questions
+}
+```
+
+**Config entity**: `internal/web/entity/gameConfig.go:3-10`
+
+## Metrics and Monitoring
+
+Room operations are tracked for observability:
+
+- **Active WebSocket connections** - Incremented on join, decremented on leave
+- **Room count** - Implicit from hub's room map
+- **Player counts** - Per-room tracking
+
+**Metrics tracking**: `internal/web/ws/rooms.go:85`, `internal/web/ws/rooms.go:101`
+
+<Note>
+Prometheus metrics are exposed at `/metrics` endpoint for monitoring system health and game activity.
+</Note>

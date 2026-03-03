@@ -1,0 +1,187 @@
+---
+title: 'Trivia API Integration'
+description: 'Open Trivia Database API integration for fetching trivia questions and categories'
+---
+
+## Overview
+
+The Trivia API integration provides a client for interacting with the Open Trivia Database (OpenTDB) API. It handles fetching trivia questions with various parameters and retrieving available categories.
+
+**Base URL**: `https://opentdb.com`
+
+**Package**: `internal/trivia_api/trivia_api.go`
+
+## TriviaClient
+
+### Creating a Client
+
+```go
+func NewTriviaClient() *triviaClient
+```
+
+Creates a new trivia client configured with the OpenTDB base URL.
+
+**Example**:
+```go
+client := triviaapi.NewTriviaClient()
+```
+
+## API Methods
+
+### GetQuestions
+
+Fetches trivia questions from the Open Trivia Database API.
+
+```go
+func (t *triviaClient) GetQuestions(amount int, category int) ([]entities.Question, error)
+```
+
+<ParamField path="amount" type="int" required>
+  Number of questions to fetch
+</ParamField>
+
+<ParamField path="category" type="int" required>
+  Category ID for the questions (use GetCategories to retrieve valid IDs)
+</ParamField>
+
+**Returns**: Array of `Question` entities with shuffled answer options
+
+**Implementation Details**:
+- Constructs API URL: `{baseURL}/api.php?amount={amount}&type=multiple&category={category}`
+- Only fetches multiple-choice questions
+- Automatically shuffles answer options to randomize correct answer position
+- Converts API response format to internal `Question` entities
+
+**Example**:
+```go
+// Fetch 10 questions from category 9 (General Knowledge)
+questions, err := client.GetQuestions(10, 9)
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### GetCategories
+
+Retrieves all available trivia categories from the API.
+
+```go
+func (t *triviaClient) GetCategories() ([]question.Category, error)
+```
+
+**Returns**: Array of `Category` objects containing ID and Name
+
+**Implementation Details**:
+- Endpoint: `{baseURL}/api_category.php`
+- Returns structured list of all available categories
+- Categories can be used as parameters for GetQuestions
+
+**Example**:
+```go
+categories, err := client.GetCategories()
+if err != nil {
+    log.Fatal(err)
+}
+
+for _, cat := range categories {
+    fmt.Printf("ID: %d, Name: %s\n", cat.Id, cat.Name)
+}
+```
+
+## API Response Structures
+
+### Trivia Question Response
+
+The API returns questions in the following format:
+
+<ResponseField name="type" type="string">
+  Question type (e.g., "multiple")
+</ResponseField>
+
+<ResponseField name="difficulty" type="string">
+  Difficulty level (easy, medium, hard)
+</ResponseField>
+
+<ResponseField name="category" type="string">
+  Category name
+</ResponseField>
+
+<ResponseField name="question" type="string">
+  The question text
+</ResponseField>
+
+<ResponseField name="correct_answer" type="string">
+  The correct answer
+</ResponseField>
+
+<ResponseField name="incorrect_answers" type="[]string">
+  Array of incorrect answer options
+</ResponseField>
+
+### Category Response
+
+<ResponseField name="trivia_categories" type="[]Category">
+  Array of category objects with Id and Name fields
+</ResponseField>
+
+## Error Handling
+
+### APIError
+
+Custom error type for Open Trivia Database API errors.
+
+**Source**: `internal/trivia_api/error.go`
+
+```go
+type APIError struct {
+    Code int
+}
+```
+
+**Error Response Codes**:
+- `0`: Success
+- Non-zero: API error (check OpenTDB documentation for specific codes)
+
+**Example Error Message**:
+```
+opentdb:API error with code:1 ,check docs for more info
+```
+
+### Error Handling Pattern
+
+```go
+questions, err := client.GetQuestions(10, 9)
+if err != nil {
+    if apiErr, ok := err.(*triviaapi.APIError); ok {
+        // Handle API-specific error
+        fmt.Printf("API error code: %d\n", apiErr.Code)
+    } else {
+        // Handle network or other errors
+        log.Fatal(err)
+    }
+}
+```
+
+## Data Conversion
+
+### ConvertToQuestion
+
+Converts API response format to internal Question entity.
+
+```go
+func ConvertToQuestion(triviaQuestionData triviaQuestion) entities.Question
+```
+
+**Process**:
+1. Extracts question text, correct answer, and incorrect answers
+2. Combines all answers into a single options array
+3. Shuffles options to randomize answer positions
+4. Creates and returns a Question entity
+
+## Implementation Notes
+
+- HTTP client uses standard `net/http` package
+- Response validation checks for HTTP 200 status code
+- JSON decoding uses `encoding/json` package
+- Answer shuffling uses `math/rand` with time-based seed for randomization
+- All requests are synchronous and blocking

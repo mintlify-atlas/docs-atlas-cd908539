@@ -1,0 +1,164 @@
+---
+title: Local Development Setup
+description: Set up Showdown Trivia for local development using the Makefile
+---
+
+## Prerequisites
+
+Before setting up the project locally, ensure you have the following installed:
+
+- **Go**: Version 1.22.2 or higher
+- **Tailwind CSS**: For styling compilation
+- **Templ**: For Go template generation
+- **Air**: For hot-reloading during development (optional)
+- **MongoDB**: For database (or use Docker Compose)
+
+## Environment Configuration
+
+<Steps>
+  <Step title="Create environment file">
+    Create a `.env` file in the project root with the following variables:
+
+    ```bash
+    DB_URL=mongodb://localhost:27017/trivia
+    PORT=8080
+    LOG_LEVEL=debug
+    ENV=dev
+    ```
+
+    <Note>
+      The `load_env.sh` script will automatically load these variables when using Makefile commands.
+    </Note>
+  </Step>
+
+  <Step title="Install dependencies">
+    Download all Go module dependencies:
+
+    ```bash
+    go mod download
+    go mod verify
+    ```
+  </Step>
+
+  <Step title="Choose your development workflow">
+    You have several options for running the application locally:
+
+    ### Option 1: Run with Hot Reload (Recommended)
+
+    Use Air for automatic reloading on code changes. This will also generate templates automatically:
+
+    ```bash
+    make air
+    ```
+
+    This command:
+    - Loads environment variables from `.env`
+    - Watches for changes in `.go`, `.templ`, `.html` files
+    - Automatically runs `templ generate` before building
+    - Rebuilds and restarts the server on changes
+
+    <Note>
+      Air is configured to exclude test files and generated template files from the build.
+    </Note>
+
+    ### Option 2: Run Directly
+
+    Run the application without hot-reload:
+
+    ```bash
+    make run
+    ```
+
+    This runs `go run ./cmd/web/main.go` with environment variables loaded.
+
+    ### Option 3: Development with Live CSS/Template Updates
+
+    For frontend-heavy development, run these commands in separate terminals:
+
+    **Terminal 1** - Watch Tailwind CSS:
+    ```bash
+    make tailwind
+    ```
+
+    **Terminal 2** - Watch Templ templates:
+    ```bash
+    make templ
+    ```
+
+    **Terminal 3** - Run the application:
+    ```bash
+    make air
+    ```
+  </Step>
+</Steps>
+
+## Building the Application
+
+To create a production build:
+
+```bash
+make build
+```
+
+This compiles the application to `./bin/web`.
+
+## Testing
+
+<CodeGroup>
+```bash Run tests
+make test
+```
+
+```bash Run with coverage
+make coverage
+```
+
+```bash Run linter
+make lint
+```
+</CodeGroup>
+
+The `coverage` target generates a coverage report and displays function-level coverage statistics.
+
+## Project Structure
+
+Key directories for local development:
+
+- `cmd/web/main.go` - Application entry point
+- `internal/` - Internal application code
+- `internal/config/` - Configuration management
+- `internal/web/static/css/` - Stylesheets (Tailwind)
+- `.air.toml` - Air configuration for hot-reload
+
+## Troubleshooting
+
+<Warning>
+  If you encounter port conflicts, Air is configured to kill any process using port 8080 before starting. You can modify this in `.air.toml` if needed.
+</Warning>
+
+### Common Issues
+
+**Environment variables not loading:**
+- Ensure `.env` file exists in the project root
+- Check that `load_env.sh` has execute permissions
+- Verify all required variables are set (DB_URL, PORT, LOG_LEVEL, ENV)
+
+**Template generation errors:**
+- Install Templ CLI: `go install github.com/a-h/templ/cmd/templ@latest`
+- Run `templ generate` manually to see detailed errors
+
+**Database connection issues:**
+- Ensure MongoDB is running on the configured port
+- Verify the DB_URL connection string format
+- Check MongoDB authentication credentials if using auth
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Docker Deployment" icon="docker" href="/deployment/docker">
+    Deploy with Docker Compose including MongoDB, Prometheus, and Grafana
+  </Card>
+  <Card title="Configuration" icon="gear" href="/deployment/configuration">
+    Learn about all available environment variables and settings
+  </Card>
+</CardGroup>

@@ -1,0 +1,340 @@
+---
+title: Docker Deployment
+description: Deploy Showdown Trivia using Docker and Docker Compose
+---
+
+## Overview
+
+Showdown Trivia includes a complete Docker Compose setup that runs:
+
+- **Application**: Go web server
+- **MongoDB**: Database for game data and user information
+- **Prometheus**: Metrics collection and monitoring
+- **Grafana**: Metrics visualization dashboard
+
+## Quick Start
+
+<Steps>
+  <Step title="Prerequisites">
+    Ensure you have installed:
+    - Docker (version 20.10 or higher)
+    - Docker Compose (version 2.0 or higher)
+  </Step>
+
+  <Step title="Build and run">
+    From the project root directory:
+
+    ```bash
+    docker compose up --build
+    ```
+
+    This command will:
+    - Build the application Docker image
+    - Pull required images (MongoDB, Prometheus, Grafana)
+    - Start all services
+    - Create necessary networks and volumes
+  </Step>
+
+  <Step title="Access the application">
+    Once all services are running, access:
+
+    - **Application**: http://localhost:8080
+    - **Prometheus**: http://localhost:9090
+    - **Grafana**: http://localhost:3000
+  </Step>
+</Steps>
+
+## Service Configuration
+
+### Application Service
+
+The main application is built using a multi-stage Dockerfile for optimized image size.
+
+**Image**: Built from `Dockerfile`  
+**Port**: 8080  
+**Container Name**: `app`
+
+**Environment Variables**:
+```yaml
+PORT=8080
+DB_URL=mongodb://admin:admin11@mongo/trivia?authSource=admin
+LOG_LEVEL=info
+ENV=dev
+```
+
+<Note>
+  The application depends on MongoDB and will wait for it to be ready before starting.
+</Note>
+
+### MongoDB Service
+
+**Image**: `mongo:7.0.5`  
+**Port**: 27017  
+**Database**: `trivia`
+
+**Default Credentials**:
+- Username: `admin`
+- Password: `admin11`
+
+<Warning>
+  These are development credentials. Change them for production deployments by modifying the environment variables in `compose.yaml`.
+</Warning>
+
+**Environment Variables**:
+```yaml
+MONGO_INITDB_DATABASE=trivia
+MONGO_INITDB_ROOT_USERNAME=admin
+MONGO_INITDB_ROOT_PASSWORD=admin11
+```
+
+### Prometheus Service
+
+**Image**: `prom/prometheus:v2.40.4`  
+**Port**: 9090
+
+**Configuration**:  
+Prometheus is configured via `/etc/prometheus/prometheus.yml`, mounted from:
+```
+./deployments/prometheus/prometheus.yml
+```
+
+This service scrapes metrics from the application for monitoring performance and game statistics.
+
+### Grafana Service
+
+**Image**: `grafana/grafana:9.3.0`  
+**Port**: 3000
+
+**Default Credentials**:
+- Username: `admin`
+- Password: `devops123`
+
+**Volumes**:
+- Configuration: `./deployments/grafana/datasources.yaml` → `/etc/grafana/provisioning/datasources/datasources.yaml`
+- Data persistence: Named volume `grafana`
+
+<Note>
+  Grafana is pre-configured with Prometheus as a data source through the provisioned datasources configuration.
+</Note>
+
+## Docker Compose File Structure
+
+<CodeGroup>
+```yaml Complete compose.yaml
+version: '3.8'
+services:
+  app:
+    build: 
+      context: ./.
+      dockerfile: Dockerfile
+    container_name: app
+    depends_on:
+      - mongo
+    ports:
+      - 8080:8080
+    environment:
+      - PORT=8080
+      - DB_URL=mongodb://admin:admin11@mongo/trivia?authSource=admin
+      - LOG_LEVEL=info
+      - ENV=dev  
+  mongo:
+    image: 'mongo:7.0.5'
+    ports:
+      - 27017:27017
+    environment:
+      - MONGO_INITDB_DATABASE=trivia
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=admin11
+  prometheus:
+    image: prom/prometheus:v2.40.4
+    ports:
+      - 9090:9090
+    volumes:
+      - ./deployments/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+  grafana:
+    image: grafana/grafana:9.3.0
+    ports:
+      - 3000:3000
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=devops123
+    volumes:
+      - ./deployments/grafana/datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
+      - grafana:/var/lib/grafana
+volumes:
+  grafana:
+```
+</CodeGroup>
+
+## Dockerfile Overview
+
+The application uses a multi-stage build for efficiency:
+
+**Stage 1: Builder** (golang:1.22.3-alpine3.18)
+- Downloads and verifies Go modules
+- Copies source code
+- Builds optimized binary with `-ldflags="-s"` (strips debug info)
+
+**Stage 2: Runtime** (alpine:latest)
+- Minimal Alpine Linux base
+- Copies only the compiled binary
+- Exposes port 8080
+- Runs the application
+
+<Note>
+  The multi-stage build reduces the final image size significantly by excluding build tools and source code.
+</Note>
+
+## Port Mappings
+
+| Service | Host Port | Container Port | Purpose |
+|---------|-----------|----------------|----------|
+| Application | 8080 | 8080 | Web application |
+| MongoDB | 27017 | 27017 | Database access |
+| Prometheus | 9090 | 9090 | Metrics collection |
+| Grafana | 3000 | 3000 | Dashboard UI |
+
+## Common Commands
+
+<CodeGroup>
+```bash Start services
+docker compose up
+```
+
+```bash Start in background
+docker compose up -d
+```
+
+```bash Rebuild and start
+docker compose up --build
+```
+
+```bash Stop services
+docker compose down
+```
+
+```bash Stop and remove volumes
+docker compose down -v
+```
+
+```bash View logs
+docker compose logs -f app
+```
+</CodeGroup>
+
+## Data Persistence
+
+The Grafana service uses a named volume (`grafana`) to persist:
+- Dashboard configurations
+- User preferences
+- Custom queries and annotations
+
+<Warning>
+  MongoDB does not use a persistent volume in the default configuration. Data will be lost when the container is removed. Add a volume mapping for production use.
+</Warning>
+
+## Customization
+
+### Change Application Port
+
+Modify both the environment variable and port mapping:
+
+```yaml
+app:
+  ports:
+    - 3000:3000  # Change host port
+  environment:
+    - PORT=3000  # Change container port
+```
+
+### Use External MongoDB
+
+Remove the `mongo` service and update the application's `DB_URL`:
+
+```yaml
+app:
+  environment:
+    - DB_URL=mongodb://user:pass@external-host:27017/trivia?authSource=admin
+```
+
+### Change Log Level
+
+Modify the `LOG_LEVEL` environment variable:
+
+```yaml
+environment:
+  - LOG_LEVEL=debug  # or info, warn, error
+```
+
+## Monitoring Setup
+
+After starting the services:
+
+<Steps>
+  <Step title="Access Grafana">
+    Navigate to http://localhost:3000 and log in with:
+    - Username: `admin`
+    - Password: `devops123`
+  </Step>
+
+  <Step title="Verify Prometheus connection">
+    Go to Configuration → Data Sources to confirm Prometheus is connected.
+  </Step>
+
+  <Step title="Create dashboards">
+    Import or create dashboards to visualize application metrics, game statistics, and performance data.
+  </Step>
+</Steps>
+
+## Troubleshooting
+
+### Container fails to start
+
+Check logs for the specific service:
+```bash
+docker compose logs app
+```
+
+### Port already in use
+
+Find and stop the conflicting process:
+```bash
+lsof -ti:8080
+kill -9 <PID>
+```
+
+Or change the port mapping in `compose.yaml`.
+
+### MongoDB connection issues
+
+Ensure the MongoDB container is healthy:
+```bash
+docker compose ps
+```
+
+Verify the connection string matches the MongoDB service configuration.
+
+## Production Considerations
+
+<Warning>
+  The default configuration is for development. For production:
+  
+  - Change all default passwords
+  - Add MongoDB persistence volume
+  - Set `ENV=prod` for the application
+  - Use `LOG_LEVEL=info` or `warn`
+  - Configure proper network security
+  - Set up SSL/TLS certificates
+  - Use secrets management for credentials
+</Warning>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Local Setup" icon="laptop-code" href="/deployment/local-setup">
+    Set up the development environment without Docker
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/deployment/configuration">
+    Understand all configuration options and environment variables
+  </Card>
+</CardGroup>

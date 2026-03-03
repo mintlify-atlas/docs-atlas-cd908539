@@ -1,0 +1,782 @@
+---
+title: "WebSocket System Architecture"
+description: "Real-time communication system using Hub, Room, and Client pattern for multiplayer trivia games"
+---
+
+## Overview
+
+Showdown Trivia uses a WebSocket-based architecture for real-time multiplayer functionality. The system is built on three core components that work together to manage game rooms and player connections.
+
+```
+                    ┌──────────────┐
+                    │     Hub      │
+                    │  (Singleton) │
+                    └──────┬───────┘
+                           │
+              ┌────────────┼────────────┐
+              │            │            │
+        ┌─────▼─────┐ ┌───▼──────┐ ┌──▼────────┐
+        │  Room A   │ │  Room B  │ │  Room C   │
+        │  (Game)   │ │  (Game)  │ │  (Game)   │
+        └─────┬─────┘ └───┬──────┘ └──┬────────┘
+              │            │            │
+     ┌────────┼───┐   ┌────┼────┐   ┌──┼────┐
+     │        │   │   │    │    │   │  │    │
+ ┌───▼──┐ ┌──▼──┐│  ┌▼───┐│   ┌▼──┐│ ┌▼───┐│
+ │Client│ │Client││ │Client│   │Client│ │Client│
+ └──────┘ └─────┘│  └────┘│   └────┘│ └────┘│
+          WebSocket       WebSocket  WebSocket
+```
+
+## Core Components
+
+### 1. Hub - Central Manager
+
+**Location:** `internal/web/ws/hub.go:27`
+
+The Hub is the central coordinator for all game rooms and WebSocket connections.
+
+#### Structure
+
+```go
+type Hub struct {
+    Logger *slog.Logger
+    rooms  RoomList              // map[string]*Room
+    m      *metrics.Metrics      // Prometheus metrics
+    sync.RWMutex                 // Thread-safe room access
+}
+```
+
+#### Key Responsibilities
+
+<AccordionGroup>
+  <Accordion title="Room Management">
+  **Adding Rooms** (`hub.go:41`)
+  ```go
+  func (h *Hub) addRoom(room *Room) {
+      h.Lock()
+      defer h.Unlock()
+      h.rooms[room.Id] = room
+  }
+  ```
+  
+  **Removing Rooms** (`hub.go:62`)
+  ```go
+  func (h *Hub) removeRoom(room *Room) {
+      h.Lock()
+      defer h.Unlock()
+      if _, ok := h.rooms[room.Id]; !ok {
+          log.Printf("attempted to remove non-existent room: %s", room.Id)
+          return
+      }
+      delete(h.rooms, room.Id)
+  }
+  ```
+  
+  Rooms are automatically removed when:
+  - The game ends (after displaying winners)
+  - All clients disconnect from the room
+  </Accordion>
+
+  <Accordion title="Room Lookup">
+  **Getting Room** (`hub.go:34`)
+  ```go
+  func (h *Hub) getRoom(roomId string) (*Room, error) {
+      if room, ok := h.rooms[roomId]; ok {
+          return room, nil
+      } else {
+          return nil, ErrRoomNotExist
+      }
+  }
+  ```
+  
+  Returns `ErrRoomNotExist` if the room ID is invalid or the room has been removed.
+  </Accordion>
+
+  <Accordion title="Listing Active Rooms">
+  **List Rooms** (`hub.go:46`)
+  ```go
+  func (h *Hub) ListRooms() []webentities.RoomData {
+      h.Lock()
+      defer h.Unlock()
+      var rooms []webentities.RoomData
+      for _, r := range h.rooms {
+          if r.Game.GameStarted {
+              continue  // Hide started games
+          }
+          rooms = append(rooms, webentities.RoomData{
+              Owner:   r.owner,
+              Id:      r.Id,
+              Players: r.getUsers(),
+          })
+      }
+      return rooms
+  }
+  ```
+  
+  Only returns rooms that haven't started yet - players can only join games in the lobby.
+  </Accordion>
+</AccordionGroup>
+
+#### Hub Initialization
+
+**Location:** `web/app.go:43`
+
+```go
+func NewApp(...) *App {
+    hub := ws.NewHub(logger, m)
+    // ...
+}
+```
+
+The Hub is created as a singleton during application startup and shared across all handlers.
+
+### 2. Room - Game Container
+
+**Location:** `internal/web/ws/rooms.go:13`
+
+Each Room represents an isolated game instance with its own players and game state.
+
+#### Structure
+
+```go
+type Room struct {
+    hub     *Hub
+    clients ClientList           // map[*Client]bool
+    Game    game.Game            // Core game logic
+    Id      string               // 7-character UUID
+    owner   string               // Username of creator
+    sync.RWMutex                 // Thread-safe client access
+}
+```
+
+#### Room Creation
+
+**Location:** `ws_upgrader.go:11`
+
+```go
+func (h *Hub) CreateRoom(w http.ResponseWriter, r *http.Request, 
+    username string, timer int, questions []entities.Question) {
+    
+    // Upgrade HTTP connection to WebSocket
+    conn, err := WebsocketUpgrader.Upgrade(w, r, nil)
+    if err != nil {
+        log.Println(err)
+        return
+    }
+    
+    // Generate unique room ID (7 chars)
+    id := uuid.New().String()[:7]
+    
+    // Create room with game instance
+    room := NewRoom(id, username, timer, questions, h)
+    h.addRoom(room)
+    
+    // Create and add owner as first client
+    client := NewClient(conn, room, username)
+    go client.readMessage()   // Start reading messages
+    go client.writeMessage()  // Start writing messages
+    room.addClient(client)
+}
+```
+
+<Note>
+Room IDs are the first 7 characters of a UUID, providing a short shareable code while maintaining uniqueness.
+</Note>
+
+#### Room Joining
+
+**Location:** `ws_upgrader.go:29`
+
+```go
+func (h *Hub) JoinRoom(w http.ResponseWriter, r *http.Request, 
+    roomId string, username string) {
+    
+    // Validate room ID
+    if roomId == "" {
+        w.WriteHeader(http.StatusUnauthorized)
+        return
+    }
+    
+    // Find room
+    room, err := h.getRoom(roomId)
+    if err != nil {
+        println(err)
+        return
+    }
+    
+    // Upgrade and add client
+    conn, err := WebsocketUpgrader.Upgrade(w, r, nil)
+    if err != nil {
+        log.Println(err)
+        return
+    }
+    
+    client := NewClient(conn, room, username)
+    go client.readMessage()
+    go client.writeMessage()
+    room.addClient(client)
+}
+```
+
+#### Message Broadcasting
+
+**Location:** `rooms.go:22`
+
+```go
+func (r *Room) sendMsg(msg []byte) {
+    for c := range r.clients {
+        c.egress <- msg  // Send to each client's egress channel
+    }
+}
+```
+
+Messages are broadcasted to all clients in the room simultaneously through their individual egress channels.
+
+#### Game Event Listener
+
+**Location:** `rooms.go:41`
+
+Each room spawns a goroutine to listen for game events and broadcast them:
+
+```go
+go func() {
+    for m := range r.Game.Message {
+        switch m.MsgType {
+        case game.MsgQuestion:
+            // Render and broadcast question
+            if payload, ok := m.Payload.(entities.Question); ok {
+                buff, err := render.RenderQuestion(payload, ...)
+                if err != nil {
+                    r.hub.Logger.Error(err.Error())
+                }
+                r.sendMsg(buff.Bytes())
+            }
+            
+        case game.MsgInfo:
+            // Render and broadcast info message
+            if payload, ok := m.Payload.(game.Info); ok {
+                buff, err := render.RenderGameMessage(payload)
+                r.sendMsg(buff.Bytes())
+            }
+            
+        case game.MsgGameEnd:
+            // Render winners and clean up
+            if payload, ok := m.Payload.(game.Winners); ok {
+                buff, err := render.GameEnd(payload)
+                r.sendMsg(buff.Bytes())
+                r.hub.removeRoom(r)  // Remove room after game ends
+            }
+        }
+    }
+}()
+```
+
+<Note>
+The Game.Message channel is closed when the game ends, which terminates this goroutine gracefully.
+</Note>
+
+#### Client Management
+
+<AccordionGroup>
+  <Accordion title="Adding Clients">
+  **Location:** `rooms.go:81`
+  
+  ```go
+  func (r *Room) addClient(client *Client) {
+      r.Lock()
+      defer r.Unlock()
+      r.clients[client] = true
+      r.hub.m.WebsocketConns.Inc()  // Increment metrics
+      
+      // Broadcast updated player list to all clients
+      buff, err := render.RenderPlayers(r.Id, r.getUsers())
+      if err != nil {
+          r.hub.Logger.Error(err.Error())
+      }
+      r.sendMsg(buff.Bytes())
+  }
+  ```
+  
+  When a player joins, all clients receive an updated player list.
+  </Accordion>
+
+  <Accordion title="Removing Clients">
+  **Location:** `rooms.go:92`
+  
+  ```go
+  func (r *Room) removeClient(client *Client) error {
+      r.Lock()
+      defer r.Unlock()
+      
+      if _, ok := r.clients[client]; ok {
+          err := client.connection.Close()
+          if err != nil {
+              return err
+          }
+          delete(r.clients, client)
+          r.hub.m.WebsocketConns.Dec()  // Decrement metrics
+      }
+      
+      // Remove room if empty
+      if len(r.clients) == 0 {
+          if _, ok := r.hub.rooms[r.Id]; ok {
+              r.hub.removeRoom(r)
+              return nil
+          }
+      }
+      return nil
+  }
+  ```
+  
+  Rooms with zero clients are automatically removed from the Hub.
+  </Accordion>
+</AccordionGroup>
+
+### 3. Client - Connection Handler
+
+**Location:** `internal/web/ws/client.go:19`
+
+Represents a single WebSocket connection to a player.
+
+#### Structure
+
+```go
+type Client struct {
+    Username   string
+    connection *websocket.Conn
+    room       *Room
+    egress     chan []byte      // Outbound message channel
+}
+```
+
+#### Connection Lifecycle
+
+```
+┌─────────────────┐
+│  HTTP Request   │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Upgrade to WS   │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Create Client   │
+└────────┬────────┘
+         │
+    ┌────┴────┐
+    │         │
+    ▼         ▼
+┌──────┐  ┌───────┐
+│ Read │  │ Write │
+│Loop  │  │ Loop  │
+└──┬───┘  └───┬───┘
+   │          │
+   ▼          ▼
+┌─────────────────┐
+│ Disconnect      │
+│ (removeClient)  │
+└─────────────────┘
+```
+
+#### Read Loop
+
+**Location:** `client.go:46`
+
+Handles incoming messages from the client:
+
+```go
+func (c *Client) readMessage() {
+    defer func() {
+        err := c.room.removeClient(c)
+        if err != nil {
+            c.room.hub.Logger.Error(err.Error())
+        }
+    }()
+    
+    // Set read deadline for connection timeout
+    if err := c.connection.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
+        log.Println(err)
+        return
+    }
+    
+    c.connection.SetReadLimit(512)  // Max message size
+    c.connection.SetPongHandler(c.pongHandler)
+    
+    for {
+        _, msg, err := c.connection.ReadMessage()
+        if err != nil {
+            if websocket.IsUnexpectedCloseError(err, 
+                websocket.CloseGoingAway,
+                websocket.CloseAbnormalClosure) {
+                c.sendErrormsg(err)
+            }
+            break
+        }
+        
+        var req Event
+        if err := json.Unmarshal(msg, &req); err != nil {
+            c.sendErrormsg(err)
+            break
+        }
+        
+        // Handle event
+        switch req.EventType {
+        case StartGame:
+            // Collect all players and start game
+            var players []*game.Player
+            for c := range c.room.clients {
+                players = append(players, game.NewPlayer(c.Username))
+            }
+            go c.room.Game.Start(players)
+            
+        case SendAnswer:
+            // Forward answer to game
+            answer := game.NewAnswer(c.Username, req.Payload)
+            c.room.Game.AnswerCh <- answer
+            
+            // Echo answer back to client
+            buff, err := render.RenderUserAnswer(req.Payload)
+            if err != nil {
+                c.room.hub.Logger.Error(err.Error())
+                return
+            }
+            c.egress <- buff.Bytes()
+            
+        default:
+            c.sendErrormsg(err)
+        }
+    }
+}
+```
+
+<Note>
+The read loop runs in its own goroutine per client, allowing concurrent handling of all client messages.
+</Note>
+
+#### Write Loop
+
+**Location:** `client.go:100`
+
+Handles outgoing messages to the client:
+
+```go
+func (c *Client) writeMessage() {
+    defer func() {
+        err := c.room.removeClient(c)
+        if err != nil {
+            c.room.hub.Logger.Error(err.Error())
+        }
+    }()
+    
+    ticker := time.NewTicker(pingInterval)  // 9 seconds
+    
+    for {
+        select {
+        case message, ok := <-c.egress:
+            if !ok {
+                // Channel closed
+                if err := c.connection.WriteMessage(
+                    websocket.CloseMessage, nil); err != nil {
+                    c.sendErrormsg(err)
+                }
+                return
+            }
+            
+            // Send message to client
+            if err := c.connection.WriteMessage(
+                websocket.TextMessage, message); err != nil {
+                c.sendErrormsg(err)
+            }
+            
+        case <-ticker.C:
+            // Send ping to keep connection alive
+            if err := c.connection.WriteMessage(
+                websocket.PingMessage, []byte("")); err != nil {
+                return
+            }
+        }
+    }
+}
+```
+
+<Accordion title="Ping/Pong Mechanism">
+**Connection Keep-Alive**
+
+- **Ping Interval:** 9 seconds (`client.go:15`)
+- **Pong Wait:** 10 seconds (`client.go:14`)
+- **Purpose:** Detect dead connections and close them promptly
+
+```go
+var (
+    pongWait     = 10 * time.Second
+    pingInterval = (pongWait * 9) / 10  // 90% of pong wait
+)
+
+func (c *Client) pongHandler(pongMsg string) error {
+    return c.connection.SetReadDeadline(time.Now().Add(pongWait))
+}
+```
+
+If a client doesn't respond to a ping within 10 seconds, the connection is considered dead and closed.
+</Accordion>
+
+## Message Types and Events
+
+### Client → Server Events
+
+**Location:** `ws/event.go:3`
+
+```go
+type Event struct {
+    EventType string `json:"type"`
+    Payload   string `json:"payload"`
+}
+
+const (
+    StartGame  = "start_game"   // Owner starts the game
+    SendAnswer = "send_answer"  // Player submits answer
+)
+```
+
+### Server → Client Messages
+
+**Location:** `core/game/domain.go:3`
+
+```go
+const (
+    MsgGameEnd  = "game_end"    // Game finished, show winners
+    MsgQuestion = "question"    // New question available
+    MsgInfo     = "info"        // Informational message
+)
+```
+
+## Connection Flow
+
+### Creating a Game
+
+```
+1. User fills out game creation form
+   ↓
+2. POST /create (validates form)
+   ↓
+3. Render game page with /wscreate WebSocket URL
+   ↓
+4. Client opens WebSocket to /wscreate?category=X&timer=Y&amount=Z
+   ↓
+5. Hub.CreateRoom()
+   ├─ Fetch questions from Trivia API
+   ├─ Generate room ID
+   ├─ Create Room with Game instance
+   └─ Create Client and start goroutines
+   ↓
+6. Client receives player list update
+   ↓
+7. Share room ID with other players
+```
+
+### Joining a Game
+
+```
+1. User clicks "Join" on room or enters room ID
+   ↓
+2. GET /join/{id} (renders game page)
+   ↓
+3. Client opens WebSocket to /wsjoin/{id}
+   ↓
+4. Hub.JoinRoom()
+   ├─ Lookup room by ID
+   ├─ Upgrade connection
+   └─ Create Client and start goroutines
+   ↓
+5. All clients receive updated player list
+   ↓
+6. Wait for owner to start game
+```
+
+### Playing a Game
+
+```
+1. Owner sends StartGame event
+   ↓
+2. Game.Start() begins question loop
+   ↓
+3. For each question:
+   │
+   ├─ Game emits MsgQuestion
+   ├─ Room broadcasts question to all clients
+   ├─ Timer starts
+   ├─ Clients send SendAnswer events
+   ├─ Game collects answers via AnswerCh
+   ├─ Timer expires
+   ├─ Game scores correct answers
+   └─ Next question or end game
+   ↓
+4. Game emits MsgGameEnd with winners
+   ↓
+5. Room broadcasts winners
+   ↓
+6. Room removed from Hub
+```
+
+## Thread Safety
+
+### Synchronization Mechanisms
+
+<AccordionGroup>
+  <Accordion title="Mutexes">
+  Both Hub and Room use `sync.RWMutex` for safe concurrent access:
+  
+  - **Read locks:** Allow multiple concurrent readers
+  - **Write locks:** Exclusive access for modifications
+  
+  ```go
+  // Reading
+  func (h *Hub) ListRooms() []webentities.RoomData {
+      h.Lock()  // Could use RLock() but modifies slice
+      defer h.Unlock()
+      // ...
+  }
+  
+  // Writing
+  func (h *Hub) addRoom(room *Room) {
+      h.Lock()
+      defer h.Unlock()
+      h.rooms[room.Id] = room
+  }
+  ```
+  </Accordion>
+
+  <Accordion title="Channels">
+  Channels provide safe communication between goroutines:
+  
+  - **egress channel:** Write loop → Client (buffered)
+  - **AnswerCh:** Client → Game (unbuffered)
+  - **Message channel:** Game → Room (unbuffered)
+  
+  No explicit locking needed for channel operations.
+  </Accordion>
+
+  <Accordion title="Goroutines">
+  Each client spawns two independent goroutines:
+  
+  - **Read goroutine:** Handles incoming messages
+  - **Write goroutine:** Handles outgoing messages
+  
+  Both clean up by calling `removeClient()` on exit.
+  </Accordion>
+</AccordionGroup>
+
+## Error Handling
+
+### Connection Errors
+
+```go
+func (c *Client) sendErrormsg(err error) {
+    c.room.hub.Logger.Error(err.Error())
+    bufferr, err := render.WsServerError()
+    if err != nil {
+        c.room.hub.Logger.Error(err.Error())
+        return
+    }
+    c.egress <- bufferr.Bytes()
+}
+```
+
+Errors are:
+1. Logged to structured logger
+2. Rendered as HTML error message
+3. Sent to the affected client
+
+### Unexpected Disconnections
+
+**Location:** `client.go:62`
+
+```go
+if websocket.IsUnexpectedCloseError(err, 
+    websocket.CloseGoingAway,
+    websocket.CloseAbnormalClosure) {
+    c.sendErrormsg(err)
+}
+```
+
+Distinguishes between:
+- **Expected closes:** User closed tab/browser
+- **Unexpected closes:** Network issues, crashes
+
+## Metrics and Monitoring
+
+**Location:** `internal/web/metrics/metrics.go`
+
+### WebSocket Metrics
+
+```go
+// Tracked automatically
+WebsocketConns prometheus.Gauge  // Current active connections
+```
+
+- Incremented when client added (`rooms.go:85`)
+- Decremented when client removed (`rooms.go:101`)
+- Exposed at `/metrics` endpoint
+
+## WebSocket Configuration
+
+**Location:** `ws/hub.go:17`
+
+```go
+var WebsocketUpgrader = websocket.Upgrader{
+    ReadBufferSize:  1024,
+    WriteBufferSize: 1024,
+    CheckOrigin:     checkOrigin,
+}
+```
+
+<Warning>
+The `checkOrigin` function currently returns `true` for all origins. In production, implement proper origin validation to prevent CSRF attacks.
+</Warning>
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Resource Cleanup" icon="broom">
+    - Always use `defer` for cleanup
+    - Close connections in `removeClient()`
+    - Remove empty rooms automatically
+    - Close channels when done
+  </Card>
+  
+  <Card title="Concurrent Safety" icon="lock">
+    - Lock before accessing shared maps
+    - Use channels for cross-goroutine communication
+    - Don't share memory, share by communicating
+    - Use `defer unlock()` to prevent deadlocks
+  </Card>
+  
+  <Card title="Error Resilience" icon="shield">
+    - Recover from panics in handlers
+    - Log all errors with context
+    - Send user-friendly error messages
+    - Continue serving other clients on errors
+  </Card>
+  
+  <Card title="Connection Health" icon="heartbeat">
+    - Implement ping/pong keep-alive
+    - Set read/write deadlines
+    - Limit message sizes
+    - Handle both graceful and ungraceful disconnects
+  </Card>
+</CardGroup>
+
+## Related Documentation
+
+<CardGroup cols={2}>
+  <Card title="Game Engine" icon="gamepad" href="/architecture/game-engine">
+    Learn how game logic processes events from WebSocket clients
+  </Card>
+  <Card title="System Overview" icon="diagram-project" href="/architecture/overview">
+    See how WebSocket system fits into overall architecture
+  </Card>
+</CardGroup>

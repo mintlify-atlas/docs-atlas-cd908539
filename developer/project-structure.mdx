@@ -1,0 +1,268 @@
+---
+title: 'Project Structure'
+description: 'Codebase organization and architectural patterns'
+---
+
+## Overview
+
+Showdown Trivia follows a clean architecture approach with a clear separation between business logic, infrastructure, and presentation layers. The project is organized following Go best practices with a modular structure.
+
+## Directory Layout
+
+```
+showdown-trivia/
+├── cmd/
+│   └── web/
+│       └── main.go              # Application entry point
+├── internal/                     # Private application code
+│   ├── config/                   # Configuration management
+│   ├── core/                     # Business logic layer
+│   │   ├── entities/             # Domain entities
+│   │   ├── game/                 # Game business logic
+│   │   ├── question/             # Question service
+│   │   └── user/                 # User service
+│   ├── logger/                   # Logging utilities
+│   ├── repository/               # Data access layer
+│   ├── trivia_api/               # External trivia API client
+│   └── web/                      # Web layer
+│       ├── handlers/             # HTTP handlers
+│       ├── ws/                   # WebSocket hub and connections
+│       ├── metrics/              # Prometheus metrics
+│       ├── views/                # Template views
+│       ├── static/               # Static assets (CSS, JS)
+│       ├── form/                 # Form validation
+│       ├── entity/               # Web entities
+│       ├── Render/               # Rendering utilities
+│       ├── app.go                # Application setup
+│       ├── routes.go             # Route definitions
+│       └── middleware.go         # HTTP middleware
+├── deployments/                  # Deployment configurations
+│   ├── grafana/                  # Grafana datasource config
+│   └── prometheus/               # Prometheus scrape config
+├── docs/                         # Project documentation
+├── .air.toml                     # Hot reload configuration
+├── compose.yaml                  # Docker Compose setup
+├── Dockerfile                    # Container image definition
+├── golangci.toml                 # Linter configuration
+├── makefile                      # Build automation
+├── tailwind.config.js            # Tailwind CSS config
+├── go.mod                        # Go module dependencies
+└── go.sum                        # Dependency checksums
+```
+
+## Core Directories Explained
+
+### `cmd/web`
+
+The application entry point at `cmd/web/main.go`. This is where:
+- Configuration is loaded
+- Dependencies are initialized (database, services, metrics)
+- The web application is bootstrapped and started
+- Graceful shutdown is handled
+
+**Key responsibilities:**
+- Initialize Prometheus registry
+- Connect to MongoDB
+- Wire up services (user, question, game)
+- Create session store
+- Start the HTTP server
+
+### `internal/core`
+
+The business logic layer following Domain-Driven Design principles.
+
+#### `internal/core/entities`
+Domain entities and value objects that represent core business concepts.
+
+#### `internal/core/game`
+Game management logic:
+- Game state management
+- Game lifecycle (start, end, scoring)
+- Game rules and validation
+- Player management within games
+
+Files: `domain.go`, `game.go`, `service.go`, `game_test.go`
+
+#### `internal/core/question`
+Question service that handles:
+- Fetching questions from external API
+- Question format validation
+- Question difficulty management
+
+Files: `domain.go`, `interfaces.go`, `service.go`
+
+#### `internal/core/user`
+User management:
+- User registration and authentication
+- User profile management
+- User validation
+
+Files: `domain.go`, `interfaces.go`, `service.go`
+
+### `internal/repository`
+
+Data access layer that abstracts database operations:
+- MongoDB connection management
+- User persistence
+- Repository pattern implementation
+
+Files: `store.go`, `user.go`
+
+### `internal/web`
+
+The HTTP/WebSocket layer handling all web interactions.
+
+#### `internal/web/handlers`
+HTTP request handlers for:
+- Authentication (signin, signup, signout)
+- Game creation and joining
+- Active games listing
+- Form rendering and processing
+
+#### `internal/web/ws`
+WebSocket management:
+- Hub pattern for connection management
+- Real-time game state broadcasting
+- Client connection lifecycle
+- Room-based messaging
+
+Files: `hub.go`, `hub_test.go`, `client.go`, `message.go`
+
+#### `internal/web/metrics`
+Prometheus metrics instrumentation:
+- Active WebSocket connection gauge
+- HTTP request duration histogram
+- Custom metrics registration
+
+Files: `metrics.go`
+
+#### `internal/web/static`
+Static assets served by the application:
+- CSS files (Tailwind output)
+- JavaScript files
+- Images and icons
+
+#### `internal/web/views`
+HTML templates (likely using templ or similar):
+- Page layouts
+- Component templates
+- Partials and fragments
+
+### `internal/config`
+
+Centralized configuration management:
+- Environment variable loading
+- Configuration validation
+- Default values
+
+Configuration includes:
+- Server port
+- Database URL
+- Log level
+- Environment (dev/prod)
+
+### `internal/logger`
+
+Structured logging wrapper:
+- Consistent log formatting
+- Log level management
+- Context-aware logging
+
+### `internal/trivia_api`
+
+External API client for fetching trivia questions:
+- HTTP client wrapper
+- API response parsing
+- Error handling
+- Rate limiting (if applicable)
+
+Files: `trivia_api.go`, `trivia_api_test.go`, `question.go`, `error.go`
+
+## Code Organization Patterns
+
+### Clean Architecture Layers
+
+1. **Domain Layer** (`internal/core`): Pure business logic, no external dependencies
+2. **Application Layer** (`internal/core` services): Use cases and business workflows
+3. **Infrastructure Layer** (`internal/repository`, `internal/trivia_api`): External integrations
+4. **Presentation Layer** (`internal/web`): HTTP/WebSocket handlers and views
+
+### Dependency Flow
+
+```
+cmd/web/main.go
+    ↓
+internal/web (App, Handlers)
+    ↓
+internal/core (Services)
+    ↓
+internal/repository (Data Access)
+```
+
+Dependencies always point inward - the core domain has no external dependencies.
+
+### Interface-Based Design
+
+Services define interfaces (in `interfaces.go` files) that:
+- Enable dependency injection
+- Facilitate testing with mocks
+- Decouple layers
+- Make the codebase more maintainable
+
+### File Naming Conventions
+
+- `domain.go` - Domain entities and value objects
+- `service.go` - Business logic implementation
+- `interfaces.go` - Interface definitions
+- `*_test.go` - Test files
+- `error.go` - Custom error types
+
+## Configuration Files
+
+### `.air.toml`
+Hot reload configuration for development. Watches for changes in `.go`, `.templ`, `.html` files and automatically rebuilds.
+
+### `golangci.toml`
+Linter configuration with enabled linters:
+- Standard Go checks (govet, errcheck, staticcheck)
+- Code quality (gocyclo, goconst, revive)
+- Style enforcement (goimports, misspell)
+- Additional checks (bodyclose, nakedret)
+
+### `compose.yaml`
+Docker Compose setup for local development with:
+- App container
+- MongoDB database
+- Prometheus monitoring
+- Grafana dashboards
+
+### `tailwind.config.js`
+Tailwind CSS configuration for styling.
+
+## Entry Point Flow
+
+When the application starts (`cmd/web/main.go`):
+
+1. Load configuration from environment variables
+2. Initialize structured logger
+3. Create session store with secure cookies
+4. Connect to MongoDB
+5. Initialize repository layer
+6. Create user service
+7. Create trivia API client
+8. Create question service
+9. Initialize Prometheus registry
+10. Create web application with all dependencies
+11. Start HTTP server on configured port
+12. Listen for shutdown signals (SIGINT, SIGTERM)
+
+## Testing Strategy
+
+Test files are co-located with implementation:
+- `internal/core/game/game_test.go`
+- `internal/web/form/game_test.go`
+- `internal/web/form/user_test.go`
+- `internal/web/ws/hub_test.go`
+- `internal/trivia_api/trivia_api_test.go`
+
+Tests follow Go conventions and use the standard `testing` package.

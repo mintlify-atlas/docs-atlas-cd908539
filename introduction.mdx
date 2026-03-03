@@ -1,0 +1,205 @@
+---
+title: Welcome to Showdown Trivia
+description: A real-time multiplayer trivia game platform built with Go, HTMX, and WebSockets for engaging competitive gameplay
+---
+
+<img
+  className="block"
+  src="https://raw.githubusercontent.com/Lafetz/multiplayer-trivia/main/docs/a.png"
+  alt="Showdown Trivia Game Interface"
+/>
+
+## What is Showdown Trivia?
+
+Showdown Trivia is a web-based real-time multiplayer trivia game platform where players compete head-to-head in fast-paced trivia competitions. Challenge your friends or join random players in trivia battles across multiple categories, with customizable game settings for endless entertainment.
+
+The platform leverages WebSocket technology to deliver instant, synchronized gameplay where every second counts. Create your own game rooms, customize difficulty and categories, or join existing games to test your knowledge against other players.
+
+## Get Started
+
+<CardGroup cols={2}>
+  <Card
+    title="Quickstart Guide"
+    icon="rocket"
+    href="/quickstart"
+  >
+    Get up and running with your first trivia game in minutes
+  </Card>
+  <Card
+    title="Live Demo"
+    icon="play"
+    href="https://showdown-trivia-game-1.onrender.com/home"
+  >
+    Try out Showdown Trivia in action (may take a moment to wake up)
+  </Card>
+  <Card
+    title="Source Code"
+    icon="github"
+    href="https://github.com/Lafetz/multiplayer-trivia"
+  >
+    Explore the codebase and contribute to the project
+  </Card>
+  <Card
+    title="Deployment"
+    icon="server"
+    href="/deployment/docker"
+  >
+    Deploy your own instance with Docker or from source
+  </Card>
+</CardGroup>
+
+## Key Features
+
+<AccordionGroup>
+  <Accordion title="Real-Time Multiplayer Gameplay" icon="users">
+    Experience synchronized, real-time trivia competitions powered by WebSocket connections. All players see questions simultaneously, and answers are processed instantly with live score updates.
+
+    ```go
+    // WebSocket hub manages all active game rooms
+    type Hub struct {
+        Logger *slog.Logger
+        rooms  RoomList
+        m      *metrics.Metrics
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="User Authentication & Sessions" icon="lock">
+    Secure user registration and authentication system with password hashing and session management using Gorilla sessions.
+
+    ```go
+    // User signup with secure password hashing
+    hashedPassword, err := hashPassword(form.Password)
+    u := user.NewUser(form.Username, form.Email, hashedPassword)
+    _, err = userService.AddUser(u)
+    ```
+  </Accordion>
+
+  <Accordion title="Customizable Game Settings" icon="sliders">
+    Create games tailored to your preferences:
+    - **Categories**: Choose from 32+ trivia categories from the Open Trivia Database
+    - **Question Count**: Set 1-50 questions per game
+    - **Timer**: Adjust answer time from 2-20 seconds per question
+
+    ```go
+    // Game configuration validation
+    if category < 0 || category > 32 {
+        f.Errors["category"] = "category can't be less 0 or greater than 32"
+    }
+    if amount < 1 || amount > 50 {
+        f.Errors["amount"] = "number of questions can't be less than 1 or greater than 50"
+    }
+    if time < 2 || time > 20 {
+        f.Errors["timer"] = "timer can't be less than 2 or greater than 20"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Live Score Tracking" icon="trophy">
+    Real-time score updates throughout the game. Players earn points for correct answers, with instant feedback after each question.
+
+    ```go
+    // Score calculation at end of each question
+    func (g *Game) endOfQuestion(question entities.Question, answers map[string]string) {
+        for username, answer := range answers {
+            if question.CorrectAnswer == answer {
+                g.score(username)
+            }
+        }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Game Room Management" icon="door-open">
+    Create private game rooms or browse and join active public games. Room owners control when games start and can configure settings.
+
+    ```go
+    // List all available game rooms
+    func (h *Hub) ListRooms() []webentities.RoomData {
+        var rooms []webentities.RoomData
+        for _, r := range h.rooms {
+            if r.Game.GameStarted {
+                continue
+            }
+            rooms = append(rooms, webentities.RoomData{
+                Owner:   r.owner,
+                Id:      r.Id,
+                Players: r.getUsers(),
+            })
+        }
+        return rooms
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Prometheus Monitoring" icon="chart-line">
+    Built-in metrics collection for production monitoring:
+    - Active WebSocket connections tracking
+    - Request duration histograms for game creation
+    - Exposed metrics endpoint at `/metrics`
+
+    ```go
+    // Metrics tracked by the application
+    type Metrics struct {
+        WebsocketConns prometheus.Gauge      // Active WebSocket connections
+        ReqDuration    *prometheus.HistogramVec // Request duration for game creation
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Technology Stack
+
+Showdown Trivia is built with modern, performant technologies:
+
+<CardGroup cols={3}>
+  <Card title="Go" icon="golang">
+    High-performance backend with `net/http` standard library
+  </Card>
+  <Card title="HTMX" icon="code">
+    Dynamic UI updates without heavy JavaScript frameworks
+  </Card>
+  <Card title="WebSockets" icon="bolt">
+    Real-time bidirectional communication via `gorilla/websocket`
+  </Card>
+  <Card title="MongoDB" icon="database">
+    Persistent storage for user data and game history
+  </Card>
+  <Card title="Prometheus" icon="chart-bar">
+    Production-ready metrics and monitoring
+  </Card>
+  <Card title="Templ" icon="file-code">
+    Type-safe Go templating for HTML generation
+  </Card>
+</CardGroup>
+
+## Architecture Overview
+
+The application follows a clean architecture pattern with clear separation of concerns:
+
+```
+├── cmd/web/              # Application entry point
+├── internal/
+│   ├── core/            # Business logic
+│   │   ├── game/        # Game mechanics and state management
+│   │   ├── question/    # Question service interfaces
+│   │   └── user/        # User domain logic
+│   ├── web/             # HTTP handlers and WebSocket
+│   │   ├── handlers/    # HTTP request handlers
+│   │   ├── ws/          # WebSocket hub and client management
+│   │   ├── metrics/     # Prometheus metrics
+│   │   └── views/       # Templ templates
+│   ├── repository/      # Data access layer
+│   ├── trivia_api/      # Open Trivia DB integration
+│   └── config/          # Configuration management
+```
+
+<Note>
+  **Question Source**: Trivia questions are fetched from the [Open Trivia Database API](https://opentdb.com), providing a vast collection of verified trivia questions across multiple categories and difficulty levels.
+</Note>
+
+## What's Next?
+
+Ready to start playing? Follow our [Quickstart Guide](/quickstart) to set up your own instance and start your first game.
+
+Looking to contribute or customize the platform? Check out the [source code on GitHub](https://github.com/Lafetz/multiplayer-trivia).
