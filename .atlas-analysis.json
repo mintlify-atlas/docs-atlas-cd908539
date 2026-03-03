@@ -1,0 +1,103 @@
+{
+  "projectType": "saas",
+  "projectName": "Showdown Trivia",
+  "projectDescription": "A real-time multiplayer trivia game platform built with Go, HTMX, and WebSockets",
+  "theme": "almond",
+  "primaryColor": "#8B5CF6",
+  "lightColor": "#A78BFA",
+  "darkColor": "#6D28D9",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/real-time-gameplay",
+              "features/user-authentication",
+              "features/game-rooms",
+              "features/scoring-system"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/local-setup",
+              "deployment/docker",
+              "deployment/configuration"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/websocket-system",
+              "architecture/game-engine"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Developer Guide",
+        "groups": [
+          {
+            "group": "Development",
+            "pages": [
+              "developer/project-structure",
+              "developer/building-and-testing",
+              "developer/monitoring"
+            ]
+          },
+          {
+            "group": "API Integration",
+            "pages": [
+              "api/trivia-api-integration",
+              "api/question-service",
+              "api/user-service"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Real-time multiplayer trivia gameplay with WebSocket connections",
+    "User authentication and session management",
+    "Customizable game rooms with configurable timer and question settings",
+    "Category selection and question fetching from Open Trivia Database API",
+    "Live score tracking and winner determination",
+    "Prometheus metrics integration for monitoring",
+    "MongoDB persistence for user data",
+    "HTMX-powered dynamic UI with server-side rendering using Templ"
+  ],
+  "publicApiSurface": [
+    "POST /signin - User authentication endpoint",
+    "POST /signup - User registration endpoint",
+    "POST /signout - User logout endpoint",
+    "GET /home - Main game lobby page",
+    "GET /create - Create game form",
+    "POST /create - Submit game configuration",
+    "GET /join/{id} - Join existing game room",
+    "GET /activegames - List available game rooms",
+    "/wscreate - WebSocket endpoint for creating game room",
+    "/wsjoin/{id} - WebSocket endpoint for joining game room",
+    "GET /metrics - Prometheus metrics endpoint",
+    "UserService.GetUser() - Retrieve user by username",
+    "UserService.AddUser() - Create new user account",
+    "QuestionService.GetQuestions() - Fetch trivia questions from API",
+    "QuestionService.GetCategories() - Fetch available trivia categories",
+    "Hub.CreateRoom() - Create new game room with WebSocket connection",
+    "Hub.JoinRoom() - Join existing game room via WebSocket",
+    "Hub.ListRooms() - Get list of active game rooms",
+    "Game.Start() - Initialize game with players and questions",
+    "Game.AskQuestion() - Send question to players and collect answers"
+  ]
+}
