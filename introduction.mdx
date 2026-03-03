@@ -177,6 +177,17 @@ Showdown Trivia is built with modern, performant technologies:
 
 The application follows a clean architecture pattern with clear separation of concerns:
 
+```text
+├── cmd/web/              # Application entry point
+├── internal/
+│   ├── core/            # Business logic
+│   │   ├── game/        # Game mechanics and state management
+│   │   ├── question/    # Question service interfaces
+│   │   └── user/        # User service interfaces
+│   ├── web/             # HTTP handlers, routes, WebSocket hub
+│   ├── repository/      # Data persistence layer
+│   ├── trivia_api/      # Open Trivia DB integration
+│   └── config/          # Configuration management
 ```
 ├── cmd/web/              # Application entry point
 ├── internal/
